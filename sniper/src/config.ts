@@ -59,6 +59,7 @@ export interface Config {
   maxCreatorLaunchesPerHour: number;
   port: number;
   exitPollMs: number;
+  dryRunFillDelayMs: number;
   dashboardToken: string;
   bindHost: string;
 }
@@ -101,6 +102,9 @@ export function loadConfig(): Config {
     port: num('PORT', 8787),
     // Backstop for the account stream; a position nobody is watching has no stop-loss.
     exitPollMs: Math.max(500, num('EXIT_POLL_MS', 2000)),
+    // Dry run would otherwise fill at the launch price, which is the one price a real
+    // transaction on a public RPC never gets. This models the delay before it lands.
+    dryRunFillDelayMs: num('DRY_RUN_FILL_DELAY_MS', 1500),
     dashboardToken,
     // Without a token the dashboard has no access control, so it stays bound to
     // loopback. Setting a token is what opens it to the rest of the network.

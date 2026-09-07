@@ -169,7 +169,10 @@
           <div><span class="lbl">prům. ztráta</span><b class="neg" id="pAvgLoss">—</b></div>
           <div><span class="lbl">nejlepší</span><b class="pos" id="pBest">—</b></div>
           <div><span class="lbl">nejhorší</span><b class="neg" id="pWorst">—</b></div>
+          <div><span class="lbl">průměr / obchod</span><b id="pExp">—</b></div>
+          <div><span class="lbl">medián</span><b id="pMedian">—</b></div>
         </div>
+        <div class="verdict" id="concentration" hidden></div>
         <div class="slip" id="slipBox" hidden>
           <div class="lbl">prokluz stop-lossu</div>
           <div class="slip-row">
@@ -320,6 +323,22 @@ function renderPerformance(p) {
   net.textContent = p.closed ? (p.netSol >= 0 ? '+' : '') + fmt(p.netSol) + ' SOL' : '—';
   net.className = p.netSol >= 0 ? 'pos' : 'neg';
 
+  $('pExp').textContent = pct(p.expectancyPct);
+  $('pExp').className = (p.expectancyPct ?? 0) >= 0 ? 'pos' : 'neg';
+  $('pMedian').textContent = pct(p.medianPct);
+  $('pMedian').className = (p.medianPct ?? 0) >= 0 ? 'pos' : 'neg';
+
+  const conc = $('concentration');
+  if (p.top3SharePct !== null && p.top3SharePct > 50) {
+    conc.hidden = false;
+    conc.className = 'verdict bad';
+    conc.textContent =
+      `Tři nejlepší obchody dělají ${fmt(p.top3SharePct, 0)} % zisku. Bez nich to nevydělává — ` +
+      `tohle je zatím rozdělení s dlouhým chvostem, ne stabilní strategie.`;
+  } else {
+    conc.hidden = true;
+  }
+
   const rate = $('winRate');
   const verdict = $('verdict');
   if (p.winRatePct === null) {
@@ -339,6 +358,12 @@ function renderPerformance(p) {
   if (p.closed < 20) {
     verdict.className = 'verdict';
     verdict.textContent = `Jen ${p.closed} ${p.closed === 1 ? 'obchod' : p.closed < 5 ? 'obchody' : 'obchodů'} — na závěry je to málo. Nech to běžet dýl.`;
+  } else if (!p.breakEvenApplies) {
+    // Most exits are timeouts, so the TP/SL break-even says nothing about this mix.
+    verdict.className = 'verdict';
+    verdict.textContent =
+      `Většina pozic končí na timeoutu, ne na TP ani SL — hranice ${fmt(p.breakEvenPct, 1)} % ` +
+      `pro tenhle mix neplatí. Řiď se průměrem na obchod (${pct(p.expectancyPct)}).`;
   } else if (beating) {
     verdict.textContent = `Nad hranicí ${fmt(p.breakEvenPct, 1)} %, kterou potřebuješ na nulu.`;
   } else {

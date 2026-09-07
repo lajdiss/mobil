@@ -49,6 +49,17 @@ export interface Performance {
   avgLossPct: number | null;
   bestPct: number | null;
   worstPct: number | null;
+  /**
+   * Average and median result per trade. With most exits landing on a timeout rather
+   * than on either threshold, win rate against break-even stops describing anything —
+   * these do.
+   */
+  expectancyPct: number | null;
+  medianPct: number | null;
+  /** Share of all profit coming from the three best trades. */
+  top3SharePct: number | null;
+  /** True when the TP/SL break-even comparison actually applies to this exit mix. */
+  breakEvenApplies: boolean;
   /** Stop-loss exits, and how far past the threshold they actually landed. */
   stopLossExits: number;
   avgOvershootPct: number | null;
@@ -98,6 +109,22 @@ export class PositionManager {
       .filter((p) => p.exitReason === 'stop-loss' && p.overshootPct !== undefined)
       .map((p) => p.overshootPct as number);
 
+    const median = (xs: number[]) => {
+      const sorted = [...xs].sort((a, b) => a - b);
+      const mid = Math.floor(sorted.length / 2);
+      return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+    };
+
+    const totalSol = results.reduce((a, r) => a + r.sol, 0);
+    const top3 = [...results].sort((a, b) => b.sol - a.sol).slice(0, 3);
+    const top3Share =
+      results.length >= 3 && totalSol > 0
+        ? (top3.reduce((a, r) => a + r.sol, 0) / totalSol) * 100
+        : null;
+    const thresholdExits = closed.filter(
+      (p) => p.exitReason === 'take-profit' || p.exitReason === 'stop-loss',
+    ).length;
+
     const { takeProfitPct, stopLossPct } = this.config;
     // Both sides of the round trip, read from the program rather than assumed.
     const roundTripFeePct = (this.executor.feeBps / 100) * 2;
@@ -115,6 +142,12 @@ export class PositionManager {
       avgLossPct: losses.length ? mean(losses.map((r) => r.pct)) : null,
       bestPct: results.length ? Math.max(...results.map((r) => r.pct)) : null,
       worstPct: results.length ? Math.min(...results.map((r) => r.pct)) : null,
+      expectancyPct: results.length ? mean(results.map((r) => r.pct)) : null,
+      medianPct: results.length ? median(results.map((r) => r.pct)) : null,
+      top3SharePct: top3Share,
+      // The break-even formula assumes every trade ends at take-profit or stop-loss.
+      // Once a meaningful share exits on a timeout instead, it describes nothing.
+      breakEvenApplies: results.length > 0 && thresholdExits / results.length >= 0.7,
       stopLossExits: overshoots.length,
       avgOvershootPct: overshoots.length ? mean(overshoots) : null,
       worstOvershootPct: overshoots.length ? Math.min(...overshoots) : null,

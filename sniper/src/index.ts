@@ -109,17 +109,28 @@ async function handleToken(token: DetectedToken) {
 
   try {
     log(`buying ${token.symbol} (${token.name}) for ${config.buyAmountSol} SOL`);
-    // The launch event already carries the reserves, so no read is needed to price it.
+
+    // Live: the launch event already carries the reserves, so the entry path needs no
+    // read at all. Dry run: filling at the launch price flatters exactly the tokens
+    // that run, since those are the ones faster bots got into first. Wait, then price
+    // off the chain, so simulated entries resemble ones a real transaction could get.
+    let entryQuote = {
+      virtualTokenReserves: token.virtualTokenReserves,
+      virtualQuoteReserves: token.virtualQuoteReserves || token.virtualSolReserves,
+      realTokenReserves: token.realTokenReserves,
+    };
+    if (config.dryRun && config.dryRunFillDelayMs > 0) {
+      await new Promise((r) => setTimeout(r, config.dryRunFillDelayMs));
+      const settled = await executor.getBondingCurve(token.mint).catch(() => null);
+      if (settled) entryQuote = settled;
+    }
+
     const { result, tokenAmount, solSpent } = await executor.buy(
       token.mint,
       token.creator,
       token.tokenProgram,
       config.buyAmountSol,
-      {
-        virtualTokenReserves: token.virtualTokenReserves,
-        virtualQuoteReserves: token.virtualQuoteReserves || token.virtualSolReserves,
-        realTokenReserves: token.realTokenReserves,
-      },
+      entryQuote,
     );
 
     spentTodaySol += solSpent;
