@@ -57,5 +57,12 @@ export function evaluate(
     return { passed: false, reason: 'mayhem mode token' };
   }
 
+  // Selling a cashback coin fails with InvalidCashbackAccumulator (6073) — the sell
+  // wants an accumulator account the plain instruction does not carry. Buying one
+  // would mean a position stop-loss cannot exit, so skip them entirely.
+  if (token.isCashbackEnabled) {
+    return { passed: false, reason: 'cashback token (cannot be sold by this bot)' };
+  }
+
   return { passed: true };
 }

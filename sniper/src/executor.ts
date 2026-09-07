@@ -8,7 +8,9 @@ import {
 } from '@solana/web3.js';
 import type { Config } from './config.js';
 import {
+  associatedTokenAddress,
   buildBuyInstruction,
+  buildCloseAccountInstruction,
   buildSellInstruction,
   createAtaIdempotentInstruction,
   decodeBondingCurve,
@@ -164,6 +166,9 @@ export class Executor {
     const curve = await this.getBondingCurve(mint);
     if (!curve) throw new Error('bonding curve not found');
     if (curve.complete) throw new Error('bonding curve already complete (migrated)');
+    // Last line of defence: selling these fails, so never take a position we cannot exit.
+    if (curve.isCashbackCoin) throw new Error('cashback coin — this bot cannot sell it');
+    if (curve.isMayhemMode) throw new Error('mayhem mode coin — not supported');
 
     const solIn = solToLamports(solAmount);
     const expectedTokens = tokensForSol(curve, solIn);
@@ -187,27 +192,61 @@ export class Executor {
     return { result, tokenAmount: minTokens, solSpent: solAmount };
   }
 
+  /** The real balance, not what we think we bought — buys can fill above the minimum. */
+  private async getTokenBalance(mint: PublicKey, tokenProgram: PublicKey): Promise<bigint> {
+    const ata = associatedTokenAddress(this.wallet.publicKey, mint, tokenProgram);
+    const balance = await this.connection.getTokenAccountBalance(ata).catch(() => null);
+    return balance ? BigInt(balance.value.amount) : 0n;
+  }
+
   async sell(
     mint: PublicKey,
     creator: PublicKey,
     tokenProgram: PublicKey,
     tokenAmount: bigint,
-  ): Promise<{ result: TradeResult | null; solOut: number }> {
+  ): Promise<{ result: TradeResult | null; solOut: number; rentReclaimed: boolean }> {
     const curve = await this.getBondingCurve(mint);
     if (!curve) throw new Error('bonding curve not found');
 
-    const expectedSol = solForTokens(curve, tokenAmount);
-    const minSolOutput = (expectedSol * BigInt(10_000 - this.config.slippageBps)) / 10_000n;
-
     if (this.config.dryRun) {
-      return { result: null, solOut: lamportsToSol(expectedSol) };
+      return {
+        result: null,
+        solOut: lamportsToSol(solForTokens(curve, tokenAmount)),
+        rentReclaimed: false,
+      };
     }
+
+    const held = await this.getTokenBalance(mint, tokenProgram);
+    if (held <= 0n) throw new Error('no tokens held to sell');
+
+    const expectedSol = solForTokens(curve, held);
+    const minSolOutput = (expectedSol * BigInt(10_000 - this.config.slippageBps)) / 10_000n;
 
     const result = await this.sendWithRecipients(async (feeRecipient, buyback) => {
       const params = this.tradeParams(mint, creator, tokenProgram, feeRecipient, buyback);
-      return [buildSellInstruction(params, tokenAmount, minSolOutput)];
+      return [buildSellInstruction(params, held, minSolOutput)];
     }, 'sell');
-    return { result, solOut: lamportsToSol(expectedSol) };
+
+    const rentReclaimed = await this.closeTokenAccount(mint, tokenProgram);
+    return { result, solOut: lamportsToSol(expectedSol), rentReclaimed };
+  }
+
+  /**
+   * Reclaims the token account rent in its own transaction, deliberately not bundled
+   * with the sell: closing fails if any dust remains, and that must never be able to
+   * take an exit down with it. Best effort — a failure here costs rent, not the trade.
+   */
+  private async closeTokenAccount(mint: PublicKey, tokenProgram: PublicKey): Promise<boolean> {
+    try {
+      if ((await this.getTokenBalance(mint, tokenProgram)) > 0n) return false;
+      await this.sendAndConfirm(
+        [buildCloseAccountInstruction(this.wallet.publicKey, mint, tokenProgram)],
+        'close token account',
+      );
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   async getBalanceSol(): Promise<number> {

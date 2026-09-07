@@ -142,6 +142,40 @@ Pak stačí Tailscale z App Storu, přihlásit se stejným účtem a v Safari ot
 z iPhonu — server koupíš v prohlížeči a připojíš se přes SSH klienta
 (např. Termius).
 
+## Náklady
+
+**Fixní, měsíčně:**
+
+| Položka | Cena |
+|---|---|
+| VPS (Hetzner/Contabo, nejmenší) | 100–150 Kč |
+| Tailscale (osobní použití) | zdarma |
+| Veřejné RPC | zdarma, ale pomalé a rate-limitované |
+| **Minimum celkem** | **~120 Kč** |
+
+Placené RPC s Geyser gRPC — jediná věc, která ze snipování dělá něco
+konkurenceschopného — stojí řádově tisíce korun měsíčně a bývá až ve vyšších
+tarifech. Ceny si ověř aktuálně, mění se.
+
+**Za obchod (v SOL):**
+
+| Položka | Kolik |
+|---|---|
+| pump.fun poplatek | ~1 % z objemu při nákupu i prodeji |
+| Priority fee | 0,000125 SOL při výchozím nastavení (0,00025 za round trip) |
+| Podpis transakce | 0,000005 SOL |
+| Rent token accountu | 0,00186–0,00196 SOL — **vratné** |
+
+Ten rent je zrádný: každý sniplý token zamkne skoro 0,002 SOL. Při deseti
+snipech denně je to 0,6 SOL měsíčně, což je násobně víc než server. Bot proto
+po prodeji účet zavírá a nájem si bere zpět — v samostatné transakci, aby
+neúspěšné zavření nemohlo shodit prodej.
+
+**Reálně ale platí tohle:** při 0,01 SOL na obchod a 300 obchodech měsíčně
+zaplatíš na poplatcích zhruba 0,15 SOL. Ztráty z propadlých rugů budou
+řádově vyšší než všechny tyhle položky dohromady. Server je nejmenší
+starost.
+
 ## Jak to funguje
 
 | Fáze | Kde | Co se děje |

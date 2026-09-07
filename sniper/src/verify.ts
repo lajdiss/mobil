@@ -166,6 +166,9 @@ async function checkRoundTrip(
   maxSolCost: bigint,
 ) {
   console.log('\nchecking sell instruction layout (buy + sell round trip)…');
+  // Account closing is not exercised here: it needs a zero balance, and the borrowed
+  // account is someone else's actively traded wallet. In the bot the close runs as its
+  // own transaction after the sell confirms, so it cannot affect an exit either way.
   const minSolOutput = (solForTokens(curve, minTokens) * 5000n) / 10_000n;
 
   let accountCount = 0;

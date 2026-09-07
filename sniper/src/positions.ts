@@ -112,7 +112,7 @@ export class PositionManager {
     }
 
     try {
-      const { result, solOut } = await this.executor.sell(
+      const { result, solOut, rentReclaimed } = await this.executor.sell(
         new PublicKey(position.mint),
         new PublicKey(position.creator),
         new PublicKey(position.tokenProgram),
@@ -122,7 +122,8 @@ export class PositionManager {
       position.exitSol = solOut;
       position.sellSignature = result?.signature;
       this.onLog(
-        `closed ${position.symbol}: ${solOut.toFixed(4)} SOL out vs ${position.entrySol.toFixed(4)} in`,
+        `closed ${position.symbol}: ${solOut.toFixed(4)} SOL out vs ${position.entrySol.toFixed(4)} in` +
+          (rentReclaimed ? ' (rent reclaimed)' : ''),
       );
     } catch (err) {
       position.status = 'failed';

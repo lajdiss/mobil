@@ -307,6 +307,24 @@ export function createAtaIdempotentInstruction(
   };
 }
 
+/**
+ * Reclaims the ~0.0019 SOL of rent locked in an emptied token account. Without this
+ * every sniped token permanently costs that much, which at any real snipe rate adds
+ * up to far more than the trading fees. The account must already be at zero balance.
+ */
+export function buildCloseAccountInstruction(
+  owner: PublicKey,
+  mint: PublicKey,
+  tokenProgram: PublicKey,
+): TransactionInstruction {
+  const account = associatedTokenAddress(owner, mint, tokenProgram);
+  return {
+    programId: tokenProgram,
+    keys: [meta(account, true), meta(owner, true), meta(owner, false, true)],
+    data: Buffer.from([9]), // TokenInstruction::CloseAccount
+  };
+}
+
 /** Constant-product quote: SOL in -> tokens out, ignoring fees. */
 export function tokensForSol(curve: BondingCurve, solIn: bigint): bigint {
   if (solIn <= 0n) return 0n;
