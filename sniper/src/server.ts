@@ -15,6 +15,7 @@ export interface DashboardState {
   spentTodaySol: number;
   config: Record<string, unknown>;
   positions: unknown[];
+  performance: unknown;
   feed: unknown[];
   logs: string[];
   stats: { detected: number; passed: number; bought: number; errors: number };

@@ -70,7 +70,11 @@ function canBuy(): string | null {
   if (!armed) return 'not armed';
   if (positions.openCount() >= config.maxOpenPositions) return 'max open positions reached';
   if (spentTodaySol + config.buyAmountSol > config.dailySpendCapSol) return 'daily spend cap reached';
-  if (balanceSol - config.buyAmountSol < config.minSolReserve) return 'wallet reserve too low';
+  // Dry run exists to evaluate the strategy before funding anything, so the wallet
+  // balance must not gate it.
+  if (!config.dryRun && balanceSol - config.buyAmountSol < config.minSolReserve) {
+    return 'wallet reserve too low';
+  }
   return null;
 }
 
@@ -191,6 +195,7 @@ const getState = (): DashboardState => ({
     dailySpendCapSol: config.dailySpendCapSol,
   },
   positions: positions.list().map((p) => ({ ...p, tokenAmount: p.tokenAmount.toString() })),
+  performance: positions.performance(),
   feed,
   logs,
   stats,

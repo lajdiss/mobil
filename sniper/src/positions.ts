@@ -27,6 +27,23 @@ export interface Position {
   error?: string;
 }
 
+/** pump.fun takes roughly 1% on each side, so a round trip costs about this much. */
+const ROUND_TRIP_FEE_PCT = 2;
+
+export interface Performance {
+  closed: number;
+  wins: number;
+  losses: number;
+  winRatePct: number | null;
+  /** Win rate needed just to break even at the current take-profit and stop-loss. */
+  breakEvenPct: number;
+  netSol: number;
+  avgWinPct: number | null;
+  avgLossPct: number | null;
+  bestPct: number | null;
+  worstPct: number | null;
+}
+
 export class PositionManager {
   private positions = new Map<string, Position>();
   private timeoutTimers = new Map<string, NodeJS.Timeout>();
@@ -45,6 +62,36 @@ export class PositionManager {
 
   openCount(): number {
     return this.list().filter((p) => p.status === 'open' || p.status === 'closing').length;
+  }
+
+  performance(): Performance {
+    const closed = this.list().filter(
+      (p): p is Position & { exitSol: number } => p.status === 'closed' && p.exitSol !== undefined,
+    );
+    const results = closed.map((p) => ({
+      pct: p.entrySol > 0 ? ((p.exitSol - p.entrySol) / p.entrySol) * 100 : 0,
+      sol: p.exitSol - p.entrySol,
+    }));
+    const wins = results.filter((r) => r.pct > 0);
+    const losses = results.filter((r) => r.pct <= 0);
+    const mean = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length;
+
+    const { takeProfitPct, stopLossPct } = this.config;
+    // w·(TP − fee) = (1 − w)·(SL + fee)  ->  w = (SL + fee) / (TP + SL)
+    const breakEven = ((stopLossPct + ROUND_TRIP_FEE_PCT) / (takeProfitPct + stopLossPct)) * 100;
+
+    return {
+      closed: results.length,
+      wins: wins.length,
+      losses: losses.length,
+      winRatePct: results.length ? (wins.length / results.length) * 100 : null,
+      breakEvenPct: breakEven,
+      netSol: results.reduce((a, r) => a + r.sol, 0),
+      avgWinPct: wins.length ? mean(wins.map((r) => r.pct)) : null,
+      avgLossPct: losses.length ? mean(losses.map((r) => r.pct)) : null,
+      bestPct: results.length ? Math.max(...results.map((r) => r.pct)) : null,
+      worstPct: results.length ? Math.min(...results.map((r) => r.pct)) : null,
+    };
   }
 
   add(position: Position) {

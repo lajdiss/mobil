@@ -16,10 +16,12 @@
     font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
   }
   header {
-    display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
-    padding: 12px 20px; border-bottom: 1px solid var(--line); background: var(--panel);
+    display: flex; align-items: center; gap: 8px 14px; flex-wrap: wrap;
+    padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel);
     position: sticky; top: 0; z-index: 10;
   }
+  /* Let the counters give way so the controls stay on the first row. */
+  #stats { flex-shrink: 1; min-width: 0; font-size: 12px; }
   h1 { font-size: 15px; margin: 0; font-weight: 600; }
   .badge { padding: 3px 9px; border-radius: 4px; font-size: 12px; font-weight: 600; }
   .badge.live { background: rgba(248,81,73,.15); color: var(--red); border: 1px solid var(--red); }
@@ -46,8 +48,14 @@
     th, td { padding: 8px 9px; font-size: 12px; }
     .cfg label { grid-template-columns: 1fr 96px; }
     .cfg input, #saveCfg { padding: 10px 8px; }
+    /* Narrow screens cannot fit every column, and a sideways-scrolling page is worse
+       than fewer columns. Entry and current value are derivable from PnL. */
+    .col-opt { display: none; }
+    main > div:last-child { order: -1; }
+    .perf .big { font-size: 26px; }
   }
   section { background: var(--panel); border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
+  .scroll { overflow-x: auto; }
   section > h2 {
     margin: 0; padding: 9px 14px; font-size: 12px; letter-spacing: .06em;
     text-transform: uppercase; color: var(--dim); border-bottom: 1px solid var(--line);
@@ -73,6 +81,20 @@
   .tag.skipped { background: rgba(139,149,167,.15); color: var(--dim); }
   .tag.error { background: rgba(248,81,73,.15); color: var(--red); }
   .warn { padding: 9px 20px; background: rgba(248,81,73,.1); border-bottom: 1px solid var(--red); color: var(--red); font-size: 12px; }
+  .perf { padding: 12px 14px; }
+  .perf .hero { display: grid; grid-template-columns: 1fr auto; align-items: end; gap: 12px; }
+  .perf .big { font-size: 30px; font-weight: 700; line-height: 1.1; }
+  .perf .vs { text-align: right; }
+  .perf .vs .big { font-size: 19px; }
+  .lbl { display: block; font-size: 11px; color: var(--dim); text-transform: uppercase; letter-spacing: .05em; }
+  .verdict {
+    margin: 11px 0 0; padding: 7px 10px; border-radius: 5px; font-size: 12px;
+    background: rgba(139,149,167,.1); color: var(--dim); border-left: 3px solid var(--dim);
+  }
+  .verdict.good { background: rgba(63,185,80,.1); color: var(--green); border-left-color: var(--green); }
+  .verdict.bad { background: rgba(248,81,73,.1); color: var(--red); border-left-color: var(--red); }
+  .perf .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px 12px; margin-top: 12px; }
+  .perf .grid b { font-size: 14px; }
 </style>
 </head>
 <body>
@@ -98,11 +120,11 @@
 <main>
   <div style="display:grid;gap:14px">
     <section>
-      <h2>Otevřené pozice</h2>
-      <table>
-        <thead><tr><th>Token</th><th>Vstup</th><th>Nyní</th><th>PnL</th><th>Stav</th><th></th></tr></thead>
+      <h2>Pozice</h2>
+      <div class="scroll"><table>
+        <thead><tr><th>Token</th><th class="col-opt">Vstup</th><th class="col-opt">Nyní</th><th>PnL</th><th>Stav</th><th></th></tr></thead>
         <tbody id="positions"></tbody>
-      </table>
+      </table></div>
       <div class="empty" id="posEmpty">Žádné pozice.</div>
     </section>
 
@@ -110,7 +132,7 @@
       <h2>Detekované tokeny</h2>
       <div class="feed">
         <table>
-          <thead><tr><th>Čas</th><th>Token</th><th>Verdikt</th><th>Důvod</th></tr></thead>
+          <thead><tr><th class="col-opt">Čas</th><th>Token</th><th>Verdikt</th><th>Důvod</th></tr></thead>
           <tbody id="feed"></tbody>
         </table>
       </div>
@@ -119,6 +141,33 @@
   </div>
 
   <div style="display:grid;gap:14px">
+    <section>
+      <h2>Úspěšnost</h2>
+      <div class="perf">
+        <div class="hero">
+          <div>
+            <div class="big" id="winRate">—</div>
+            <div class="lbl">úspěšnost</div>
+          </div>
+          <div class="vs">
+            <div class="big dim" id="breakEven">—</div>
+            <div class="lbl">nutné minimum</div>
+          </div>
+        </div>
+        <div class="verdict" id="verdict">Zatím žádný uzavřený obchod.</div>
+        <div class="grid">
+          <div><span class="lbl">uzavřeno</span><b id="pClosed">0</b></div>
+          <div><span class="lbl">v plusu</span><b class="pos" id="pWins">0</b></div>
+          <div><span class="lbl">v mínusu</span><b class="neg" id="pLosses">0</b></div>
+          <div><span class="lbl">čistý PnL</span><b id="pNet">—</b></div>
+          <div><span class="lbl">prům. zisk</span><b class="pos" id="pAvgWin">—</b></div>
+          <div><span class="lbl">prům. ztráta</span><b class="neg" id="pAvgLoss">—</b></div>
+          <div><span class="lbl">nejlepší</span><b class="pos" id="pBest">—</b></div>
+          <div><span class="lbl">nejhorší</span><b class="neg" id="pWorst">—</b></div>
+        </div>
+      </div>
+    </section>
+
     <section>
       <h2>Nastavení</h2>
       <div class="cfg" id="cfg">
@@ -193,7 +242,8 @@ function render(s) {
     if (el && editing !== k) el.value = v;
   }
 
-  const open = s.positions.filter(p => p.status !== 'closed' && p.status !== 'failed');
+  renderPerformance(s.performance);
+
   const rows = s.positions.slice(0, 40);
   $('posEmpty').hidden = rows.length > 0;
   $('positions').innerHTML = rows.map(p => {
@@ -201,8 +251,8 @@ function render(s) {
     const canClose = p.status === 'open';
     return `<tr>
       <td><b>${esc(p.symbol)}</b> <span class="dim">${esc(p.name)}</span><br><span class="mint">${short(p.mint)}</span></td>
-      <td>${fmt(p.entrySol)}</td>
-      <td>${fmt(p.currentSol)}</td>
+      <td class="col-opt">${fmt(p.entrySol)}</td>
+      <td class="col-opt">${fmt(p.currentSol)}</td>
       <td class="${cls}">${p.pnlPct >= 0 ? '+' : ''}${fmt(p.pnlPct, 1)}%</td>
       <td>${esc(p.status)}${p.exitReason ? '<br><span class="mint">' + esc(p.exitReason) + '</span>' : ''}</td>
       <td>${canClose ? `<button data-close="${esc(p.mint)}">Prodat</button>` : ''}</td>
@@ -211,13 +261,54 @@ function render(s) {
 
   $('feedEmpty').hidden = s.feed.length > 0;
   $('feed').innerHTML = s.feed.slice(0, 50).map(f => `<tr>
-    <td class="dim">${new Date(f.at).toLocaleTimeString()}</td>
+    <td class="dim col-opt">${new Date(f.at).toLocaleTimeString()}</td>
     <td><b>${esc(f.symbol)}</b> <span class="mint">${short(f.mint)}</span></td>
     <td><span class="tag ${f.verdict}">${esc(f.verdict)}</span></td>
     <td class="dim">${esc(f.reason || '')}</td>
   </tr>`).join('');
 
   $('logs').innerHTML = s.logs.slice(0, 80).map(l => `<div>${esc(l)}</div>`).join('');
+}
+
+function renderPerformance(p) {
+  const pct = (v, d = 1) => (v === null || v === undefined ? '—' : fmt(v, d) + '%');
+  $('breakEven').textContent = pct(p.breakEvenPct);
+  $('pClosed').textContent = p.closed;
+  $('pWins').textContent = p.wins;
+  $('pLosses').textContent = p.losses;
+  $('pAvgWin').textContent = pct(p.avgWinPct);
+  $('pAvgLoss').textContent = pct(p.avgLossPct);
+  $('pBest').textContent = pct(p.bestPct);
+  $('pWorst').textContent = pct(p.worstPct);
+
+  const net = $('pNet');
+  net.textContent = p.closed ? (p.netSol >= 0 ? '+' : '') + fmt(p.netSol) + ' SOL' : '—';
+  net.className = p.netSol >= 0 ? 'pos' : 'neg';
+
+  const rate = $('winRate');
+  const verdict = $('verdict');
+  if (p.winRatePct === null) {
+    rate.textContent = '—';
+    rate.className = 'big dim';
+    verdict.className = 'verdict';
+    verdict.textContent = 'Zatím žádný uzavřený obchod.';
+    return;
+  }
+
+  rate.textContent = fmt(p.winRatePct, 1) + '%';
+  const beating = p.winRatePct >= p.breakEvenPct;
+  rate.className = 'big ' + (beating ? 'pos' : 'neg');
+  verdict.className = 'verdict ' + (beating ? 'good' : 'bad');
+
+  // A handful of trades says nothing; say so rather than implying the number is a result.
+  if (p.closed < 20) {
+    verdict.className = 'verdict';
+    verdict.textContent = `Jen ${p.closed} ${p.closed === 1 ? 'obchod' : p.closed < 5 ? 'obchody' : 'obchodů'} — na závěry je to málo. Nech to běžet dýl.`;
+  } else if (beating) {
+    verdict.textContent = `Nad hranicí ${fmt(p.breakEvenPct, 1)} %, kterou potřebuješ na nulu.`;
+  } else {
+    verdict.textContent = `Pod hranicí ${fmt(p.breakEvenPct, 1)} %. Takhle strategie prodělává.`;
+  }
 }
 
 function esc(v) {

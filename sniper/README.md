@@ -142,6 +142,26 @@ Pak stačí Tailscale z App Storu, přihlásit se stejným účtem a v Safari ot
 z iPhonu — server koupíš v prohlížeči a připojíš se přes SSH klienta
 (např. Termius).
 
+## Úspěšnost
+
+Dashboard počítá z uzavřených pozic úspěšnost a staví ji proti hranici, kterou
+při daném TP/SL potřebuješ jen na to, abys byl na nule:
+
+```
+potřebná úspěšnost = (SL + poplatky) / (TP + SL)
+```
+
+Při TP 50 %, SL 30 % a ~2 % poplatcích to vychází na **40 %**. Číslo se
+přepočítává podle toho, co máš zrovna nastavené, takže hned vidíš, jestli si
+úpravou TP/SL pomáháš, nebo ne.
+
+Panel drží jazyk za zuby, dokud nemá aspoň 20 uzavřených obchodů — pod tím
+je jakékoliv procento jen šum.
+
+Bot nic nepredikuje. Nemá názor na to, který token poroste; kupuje, co projde
+filtry, a mechanicky uřízne pozici podle pravidel. Úspěšnost je tedy vlastnost
+tvého nastavení a tržních podmínek, ne inteligence bota.
+
 ## Náklady
 
 **Fixní, měsíčně:**
