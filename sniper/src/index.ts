@@ -3,6 +3,7 @@ import { loadConfig, loadKeypair, type Config } from './config.js';
 import { Detector, type DetectedToken } from './detector.js';
 import { Executor } from './executor.js';
 import { CreatorHistory, evaluate } from './filters.js';
+import { MomentumTracker } from './momentum.js';
 import { PositionManager, type Position } from './positions.js';
 import { startServer, type DashboardState } from './server.js';
 
@@ -74,6 +75,19 @@ function canBuy(mint: string): string | null {
   return null;
 }
 
+const momentum = new MomentumTracker(
+  {
+    minLiquiditySol: config.momentumMinLiquiditySol,
+    minBuys: config.momentumMinBuys,
+    maxAgeSeconds: config.momentumMaxAgeSeconds,
+    minBuyRatio: config.momentumMinBuyRatio,
+  },
+  (token, liquiditySol, buys) => {
+    log(`${token.symbol} qualified: ${liquiditySol.toFixed(2)} SOL liquidity, ${buys} buys`);
+    void enterPosition(token);
+  },
+);
+
 async function handleToken(token: DetectedToken) {
   stats.detected++;
   history.record(token.creator.toBase58());
@@ -93,6 +107,16 @@ async function handleToken(token: DetectedToken) {
   }
   stats.passed++;
 
+  // Momentum mode does not enter here — the token has to earn it first.
+  if (config.entryMode === 'momentum') {
+    momentum.register(token);
+    return;
+  }
+
+  await enterPosition(token);
+}
+
+async function enterPosition(token: DetectedToken) {
   const blocker = canBuy(token.mint.toBase58());
   if (blocker) {
     pushFeed({
@@ -119,7 +143,12 @@ async function handleToken(token: DetectedToken) {
       virtualQuoteReserves: token.virtualQuoteReserves || token.virtualSolReserves,
       realTokenReserves: token.realTokenReserves,
     };
-    if (config.dryRun && config.dryRunFillDelayMs > 0) {
+    // Momentum entries happen well after the launch, so the reserves in the create
+    // event are long stale — the price has to come from the chain either way.
+    if (config.entryMode === 'momentum') {
+      const now = await executor.getBondingCurve(token.mint).catch(() => null);
+      if (now) entryQuote = now;
+    } else if (config.dryRun && config.dryRunFillDelayMs > 0) {
       await new Promise((r) => setTimeout(r, config.dryRunFillDelayMs));
       const settled = await executor.getBondingCurve(token.mint).catch(() => null);
       if (settled) entryQuote = settled;
@@ -185,7 +214,10 @@ async function handleToken(token: DetectedToken) {
 const detector = new Detector(
   connection,
   (token) => void handleToken(token),
-  (trade) => positions.onTrade(trade),
+  (trade) => {
+    positions.onTrade(trade);
+    if (config.entryMode === 'momentum') momentum.onTrade(trade);
+  },
   (message) => log(message),
 );
 
@@ -267,6 +299,9 @@ async function main() {
   console.log('  wallet: ', wallet.publicKey.toBase58());
   console.log('  rpc:    ', config.rpcUrl);
   console.log('  mode:   ', config.dryRun ? 'DRY RUN (no real transactions)' : 'LIVE TRADING');
+  console.log('  entry:  ', config.entryMode === 'momentum'
+    ? `momentum (wait for ${config.momentumMinLiquiditySol} SOL liquidity and ${config.momentumMinBuys} buys)`
+    : 'snipe (buy at launch)');
   if (!config.dryRun) {
     console.log('');
     console.log('  !! LIVE MODE — this wallet will spend real SOL.');

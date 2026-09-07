@@ -58,6 +58,11 @@ export interface Config {
   blockedNamePatterns: string[];
   maxCreatorLaunchesPerHour: number;
   maxDevBuyPct: number;
+  entryMode: 'snipe' | 'momentum';
+  momentumMinLiquiditySol: number;
+  momentumMinBuys: number;
+  momentumMaxAgeSeconds: number;
+  momentumMinBuyRatio: number;
   port: number;
   exitPollMs: number;
   dryRunFillDelayMs: number;
@@ -103,6 +108,13 @@ export function loadConfig(): Config {
     // A creator holding a large slice of their own supply is the classic setup for
     // dumping it on whoever snipes the launch. 0 disables the check.
     maxDevBuyPct: num('MAX_DEV_BUY_PCT', 0),
+    // 'snipe' races the launch; 'momentum' waits for a token to prove itself first,
+    // which trades away the launch pop for independence from latency.
+    entryMode: (process.env.ENTRY_MODE || 'snipe') === 'momentum' ? 'momentum' : 'snipe',
+    momentumMinLiquiditySol: num('MOMENTUM_MIN_LIQUIDITY_SOL', 5),
+    momentumMinBuys: num('MOMENTUM_MIN_BUYS', 8),
+    momentumMaxAgeSeconds: num('MOMENTUM_MAX_AGE_SECONDS', 120),
+    momentumMinBuyRatio: num('MOMENTUM_MIN_BUY_RATIO', 0.6),
     port: num('PORT', 8787),
     // Backstop for the account stream; a position nobody is watching has no stop-loss.
     exitPollMs: Math.max(500, num('EXIT_POLL_MS', 2000)),
