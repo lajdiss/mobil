@@ -224,6 +224,9 @@ export interface CurveQuote {
 export interface TradeUpdate extends CurveQuote {
   mint: PublicKey;
   isBuy: boolean;
+  solAmount: bigint;
+  tokenAmount: bigint;
+  user: PublicKey;
 }
 
 /**
@@ -236,7 +239,10 @@ export function decodeTradeEventPrefix(data: Buffer): TradeUpdate | null {
   if (data.length < 129) return null;
   return {
     mint: new PublicKey(data.subarray(8, 40)),
+    solAmount: data.readBigUInt64LE(40),
+    tokenAmount: data.readBigUInt64LE(48),
     isBuy: data[56] === 1,
+    user: new PublicKey(data.subarray(57, 89)),
     virtualQuoteReserves: data.readBigUInt64LE(97),
     virtualTokenReserves: data.readBigUInt64LE(105),
     realTokenReserves: data.readBigUInt64LE(121),

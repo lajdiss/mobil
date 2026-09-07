@@ -12,6 +12,9 @@ import {
 export interface DetectedToken extends CreateEvent {
   signature: string;
   detectedAt: number;
+  /** Share of total supply the creator bought inside the launch transaction. */
+  devBuyPct: number;
+  devBuySol: number;
 }
 
 const LOG_DATA_PREFIX = 'Program data: ';
@@ -80,10 +83,7 @@ export class Detector {
       (logs) => {
         this.lastEventAt = Date.now();
         if (logs.err) return;
-        for (const line of logs.logs) {
-          if (!line.startsWith(LOG_DATA_PREFIX)) continue;
-          this.handleEvent(line.slice(LOG_DATA_PREFIX.length), logs.signature);
-        }
+        this.handleBatch(logs.logs, logs.signature);
       },
       'processed',
     );
@@ -100,40 +100,64 @@ export class Detector {
     this.subscribe();
   }
 
-  private handleEvent(encoded: string, signature: string) {
-    let data: Buffer;
-    try {
-      data = Buffer.from(encoded, 'base64');
-    } catch {
-      this.counters.undecodable++;
-      return;
-    }
-    if (data.length < 8) return;
-    const discriminator = data.subarray(0, 8);
+  /**
+   * Handled a batch at a time rather than line by line, because a launch and the
+   * creator's own buy of it land in the same transaction. Pairing them here reveals how
+   * much of the supply the dev took at launch — the clearest rug signal available, and
+   * it costs nothing: the data is already in the logs.
+   */
+  private handleBatch(lines: string[], signature: string) {
+    let create: CreateEvent | null = null;
+    const trades: TradeUpdate[] = [];
 
-    try {
-      if (discriminator.equals(TRADE_EVENT_DISCRIMINATOR)) {
-        const trade = decodeTradeEventPrefix(data);
-        if (trade) {
-          this.counters.trades++;
-          this.onTrade(trade);
+    for (const line of lines) {
+      if (!line.startsWith(LOG_DATA_PREFIX)) continue;
+      let data: Buffer;
+      try {
+        data = Buffer.from(line.slice(LOG_DATA_PREFIX.length), 'base64');
+      } catch {
+        this.counters.undecodable++;
+        continue;
+      }
+      if (data.length < 8) continue;
+      const discriminator = data.subarray(0, 8);
+
+      try {
+        if (discriminator.equals(TRADE_EVENT_DISCRIMINATOR)) {
+          const trade = decodeTradeEventPrefix(data);
+          if (trade) {
+            this.counters.trades++;
+            trades.push(trade);
+            this.onTrade(trade);
+          }
+        } else if (discriminator.equals(CREATE_EVENT_DISCRIMINATOR)) {
+          create = decodeCreateEvent(data);
         }
-        return;
+      } catch (err) {
+        this.counters.undecodable++;
+        this.onError(`could not decode a pump.fun event: ${(err as Error).message}`);
       }
-
-      if (discriminator.equals(CREATE_EVENT_DISCRIMINATOR)) {
-        // The same launch can appear on more than one log line; only act once.
-        if (this.seenCreates.has(signature)) return;
-        this.seenCreates.add(signature);
-        if (this.seenCreates.size > 5000) this.seenCreates.clear();
-
-        this.counters.creates++;
-        this.onToken({ ...decodeCreateEvent(data), signature, detectedAt: Date.now() });
-      }
-    } catch (err) {
-      this.counters.undecodable++;
-      this.onError(`could not decode a pump.fun event: ${(err as Error).message}`);
     }
+
+    if (!create) return;
+    // The same launch can appear on more than one notification; only act once.
+    if (this.seenCreates.has(signature)) return;
+    this.seenCreates.add(signature);
+    if (this.seenCreates.size > 5000) this.seenCreates.clear();
+    this.counters.creates++;
+
+    const devBuy = trades.find(
+      (t) => t.isBuy && t.mint.equals(create.mint) && t.user.equals(create.user),
+    );
+    const supply = create.tokenTotalSupply;
+    this.onToken({
+      ...create,
+      signature,
+      detectedAt: Date.now(),
+      devBuyPct:
+        devBuy && supply > 0n ? Number((devBuy.tokenAmount * 10_000n) / supply) / 100 : 0,
+      devBuySol: devBuy ? Number(devBuy.solAmount) / 1e9 : 0,
+    });
   }
 
   async stop() {

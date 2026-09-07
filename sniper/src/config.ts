@@ -57,6 +57,7 @@ export interface Config {
   requireSocials: boolean;
   blockedNamePatterns: string[];
   maxCreatorLaunchesPerHour: number;
+  maxDevBuyPct: number;
   port: number;
   exitPollMs: number;
   dryRunFillDelayMs: number;
@@ -99,6 +100,9 @@ export function loadConfig(): Config {
       .map((s) => s.trim().toLowerCase())
       .filter(Boolean),
     maxCreatorLaunchesPerHour: num('MAX_CREATOR_LAUNCHES_PER_HOUR', 1),
+    // A creator holding a large slice of their own supply is the classic setup for
+    // dumping it on whoever snipes the launch. 0 disables the check.
+    maxDevBuyPct: num('MAX_DEV_BUY_PCT', 0),
     port: num('PORT', 8787),
     // Backstop for the account stream; a position nobody is watching has no stop-loss.
     exitPollMs: Math.max(500, num('EXIT_POLL_MS', 2000)),

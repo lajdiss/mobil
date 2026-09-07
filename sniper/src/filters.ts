@@ -53,6 +53,13 @@ export function evaluate(
     };
   }
 
+  if (config.maxDevBuyPct > 0 && token.devBuyPct > config.maxDevBuyPct) {
+    return {
+      passed: false,
+      reason: `dev bought ${token.devBuyPct.toFixed(1)}% of supply at launch`,
+    };
+  }
+
   if (token.isMayhemMode) {
     return { passed: false, reason: 'mayhem mode token' };
   }
