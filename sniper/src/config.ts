@@ -38,9 +38,16 @@ export function loadKeypair(): Keypair {
   }
 }
 
+export interface RpcEndpoint {
+  http: string;
+  ws: string;
+}
+
 export interface Config {
   rpcUrl: string;
   wsUrl: string;
+  /** Stream endpoints tried in order; a public RPC can serve HTTP while its WS is dead. */
+  streamEndpoints: RpcEndpoint[];
   dryRun: boolean;
   buyAmountSol: number;
   maxSolPerTrade: number;
@@ -75,6 +82,18 @@ export function loadConfig(): Config {
   const wsUrl = process.env.WS_URL || rpcUrl.replace(/^http/, 'ws');
   const dashboardToken = (process.env.DASHBOARD_TOKEN || '').trim();
 
+  const toEndpoint = (http: string): RpcEndpoint => ({
+    http: http.trim(),
+    ws: http.trim().replace(/^http/, 'ws'),
+  });
+  const fallbacks = (process.env.RPC_FALLBACK_URLS || 'https://api.mainnet-beta.solana.com')
+    .split(',')
+    .map((u) => u.trim())
+    .filter(Boolean);
+  const streamEndpoints = [rpcUrl, ...fallbacks]
+    .filter((u, i, all) => all.indexOf(u) === i)
+    .map(toEndpoint);
+
   if (dashboardToken && dashboardToken.length < 16) {
     throw new Error(
       'DASHBOARD_TOKEN must be at least 16 characters — it is the only thing standing ' +
@@ -85,6 +104,7 @@ export function loadConfig(): Config {
   const cfg: Config = {
     rpcUrl,
     wsUrl,
+    streamEndpoints,
     // Live trading is opt-in on purpose: a typo in a filter should not cost real SOL.
     dryRun: bool('DRY_RUN', true),
     buyAmountSol: num('BUY_AMOUNT_SOL', 0.01),

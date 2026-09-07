@@ -19,7 +19,13 @@ export interface DashboardState {
   feed: unknown[];
   logs: string[];
   stats: { detected: number; passed: number; bought: number; errors: number; missed: number };
-  stream: { alive: boolean; silentMs: number | null; resubscribes: number; trades: number };
+  stream: {
+    alive: boolean;
+    silentMs: number | null;
+    resubscribes: number;
+    trades: number;
+    endpoint: string;
+  };
 }
 
 export interface ServerHooks {

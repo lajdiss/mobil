@@ -212,7 +212,7 @@ async function enterPosition(token: DetectedToken) {
 }
 
 const detector = new Detector(
-  connection,
+  config.streamEndpoints,
   (token) => void handleToken(token),
   (trade) => {
     positions.onTrade(trade);
