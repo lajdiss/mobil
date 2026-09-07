@@ -175,10 +175,19 @@ async function enterPosition(token: DetectedToken) {
       realTokenReserves: token.realTokenReserves,
     };
     // Momentum entries happen well after the launch, so the reserves in the create
-    // event are long stale — the price has to come from the chain either way.
+    // event are long stale. Falling back to them is not a degraded price, it is a
+    // fictional one: the token qualified precisely because it went up, so a stale
+    // quote books a cheap entry against a real exit and invents a win. Measured once —
+    // five such trades reported +451% to +474% and turned a losing round into a
+    // passing one. Without a current price there is no trade.
     if (config.entryMode === 'momentum') {
       const now = await executor.getBondingCurve(token.mint).catch(() => null);
-      if (now) entryQuote = now;
+      if (!now) {
+        stats.errors++;
+        log(`skipping ${token.symbol}: could not read the current price`);
+        return;
+      }
+      entryQuote = now;
     } else if (config.dryRun && config.dryRunFillDelayMs > 0) {
       await new Promise((r) => setTimeout(r, config.dryRunFillDelayMs));
       const settled = await executor.getBondingCurve(token.mint).catch(() => null);
