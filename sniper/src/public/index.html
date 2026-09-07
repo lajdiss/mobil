@@ -116,6 +116,7 @@
   <span class="stat">zůstatek <b id="balance">…</b></span>
   <span class="stat">dnes utraceno <b id="spent">…</b></span>
   <span class="spacer"></span>
+  <span class="stat" id="stream"></span>
   <span class="stat" id="stats"></span>
   <button id="armBtn">…</button>
   <button class="panic" id="panicBtn">PANIC SELL</button>
@@ -242,6 +243,11 @@ function render(s) {
   $('wallet').title = s.wallet;
   $('balance').textContent = fmt(s.balanceSol) + ' SOL';
   $('spent').textContent = fmt(s.spentTodaySol) + ' / ' + fmt(s.config.dailySpendCapSol, 2) + ' SOL';
+  const stream = $('stream');
+  stream.innerHTML = s.stream.alive
+    ? `stream <b class="pos">živý</b> · ${s.stream.trades} eventů`
+    : `stream <b class="neg">MRTVÝ</b>${s.stream.resubscribes ? ' · ' + s.stream.resubscribes + 'x obnoven' : ''}`;
+
   $('stats').textContent =
     `detekováno ${s.stats.detected} · prošlo ${s.stats.passed} · nakoupeno ${s.stats.bought}` +
     ` · nestihnuto ${s.stats.missed} · chyb ${s.stats.errors}`;

@@ -20,6 +20,7 @@ import {
   globalPda,
   solCostForTokens,
   solForTokens,
+  type CurveQuote,
   tokensForSol,
   type BondingCurve,
   type GlobalState,
@@ -216,13 +217,22 @@ export class Executor {
     creator: PublicKey,
     tokenProgram: PublicKey,
     solAmount: number,
+    knownCurve?: CurveQuote,
   ): Promise<{ result: TradeResult | null; tokenAmount: bigint; solSpent: number }> {
-    const curve = await this.getBondingCurve(mint);
-    if (!curve) throw new Error('bonding curve not found');
-    if (curve.complete) throw new Error('bonding curve already complete (migrated)');
-    // Last line of defence: selling these fails, so never take a position we cannot exit.
-    if (curve.isCashbackCoin) throw new Error('cashback coin — this bot cannot sell it');
-    if (curve.isMayhemMode) throw new Error('mayhem mode coin — not supported');
+    // A fresh launch comes with its reserves in the CreateEvent, so the entry path can
+    // skip reading the bonding curve entirely. Only fall back when there is no quote.
+    let curve: CurveQuote;
+    if (knownCurve) {
+      curve = knownCurve;
+    } else {
+      const onChain = await this.getBondingCurve(mint);
+      if (!onChain) throw new Error('bonding curve not found');
+      if (onChain.complete) throw new Error('bonding curve already complete (migrated)');
+      // Last line of defence: selling these fails, never take a position we cannot exit.
+      if (onChain.isCashbackCoin) throw new Error('cashback coin — this bot cannot sell it');
+      if (onChain.isMayhemMode) throw new Error('mayhem mode coin — not supported');
+      curve = onChain;
+    }
 
     const solIn = solToLamports(solAmount);
     // buy takes an exact token amount and caps the SOL, so asking for fewer tokens does
@@ -282,7 +292,7 @@ export class Executor {
     creator: PublicKey,
     tokenProgram: PublicKey,
     tokenAmount: bigint,
-    knownCurve?: BondingCurve,
+    knownCurve?: CurveQuote,
   ): Promise<{ result: TradeResult | null; solOut: number; rentReclaimed: boolean }> {
     // The caller usually just read this curve to decide to exit; re-fetching it would
     // add a round trip to the most latency-sensitive path in the bot.

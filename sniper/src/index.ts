@@ -1,6 +1,6 @@
 import { Connection, PublicKey } from '@solana/web3.js';
 import { loadConfig, loadKeypair, type Config } from './config.js';
-import { CurveWatcher, Detector, type DetectedToken } from './detector.js';
+import { Detector, type DetectedToken } from './detector.js';
 import { Executor } from './executor.js';
 import { CreatorHistory, evaluate } from './filters.js';
 import { PositionManager, type Position } from './positions.js';
@@ -14,7 +14,6 @@ const connection = new Connection(config.rpcUrl, {
 });
 
 const executor = new Executor(connection, wallet, config);
-const watcher = new CurveWatcher(connection);
 const history = new CreatorHistory();
 
 interface FeedEntry {
@@ -57,13 +56,7 @@ function rolloverSpendCap() {
   }
 }
 
-const positions = new PositionManager(
-  executor,
-  watcher,
-  config,
-  () => {},
-  log,
-);
+const positions = new PositionManager(executor, config, () => {}, log);
 
 function canBuy(mint: string): string | null {
   rolloverSpendCap();
@@ -116,11 +109,17 @@ async function handleToken(token: DetectedToken) {
 
   try {
     log(`buying ${token.symbol} (${token.name}) for ${config.buyAmountSol} SOL`);
+    // The launch event already carries the reserves, so no read is needed to price it.
     const { result, tokenAmount, solSpent } = await executor.buy(
       token.mint,
       token.creator,
       token.tokenProgram,
       config.buyAmountSol,
+      {
+        virtualTokenReserves: token.virtualTokenReserves,
+        virtualQuoteReserves: token.virtualQuoteReserves || token.virtualSolReserves,
+        realTokenReserves: token.realTokenReserves,
+      },
     );
 
     spentTodaySol += solSpent;
@@ -175,6 +174,7 @@ async function handleToken(token: DetectedToken) {
 const detector = new Detector(
   connection,
   (token) => void handleToken(token),
+  (trade) => positions.onTrade(trade),
   (message) => log(message),
 );
 
@@ -201,7 +201,8 @@ const getState = (): DashboardState => ({
   performance: positions.performance(),
   feed,
   logs,
-  stats: { ...stats, missed: detector.counters.dropped },
+  stats: { ...stats, missed: detector.counters.undecodable },
+  stream: detector.health(),
 });
 
 const EDITABLE_NUMERIC = new Set([

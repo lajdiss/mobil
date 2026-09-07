@@ -20,6 +20,7 @@ const FEE_CONFIG_SEED = Buffer.from([
 const BUY_DISCRIMINATOR = Buffer.from([102, 6, 61, 18, 1, 218, 235, 234]);
 const SELL_DISCRIMINATOR = Buffer.from([51, 230, 133, 164, 1, 127, 131, 173]);
 export const CREATE_EVENT_DISCRIMINATOR = Buffer.from([27, 114, 169, 77, 222, 235, 99, 118]);
+export const TRADE_EVENT_DISCRIMINATOR = Buffer.from([189, 219, 127, 211, 78, 230, 97, 238]);
 export const ANCHOR_CPI_EVENT_PREFIX = Buffer.from([228, 69, 165, 46, 81, 203, 154, 29]);
 
 const seed = (s: string) => Buffer.from(s);
@@ -213,6 +214,35 @@ export function decodeCreateEvent(data: Buffer): CreateEvent {
   };
 }
 
+/** Just enough of a curve to price a position. */
+export interface CurveQuote {
+  virtualTokenReserves: bigint;
+  virtualQuoteReserves: bigint;
+  realTokenReserves?: bigint;
+}
+
+export interface TradeUpdate extends CurveQuote {
+  mint: PublicKey;
+  isBuy: boolean;
+}
+
+/**
+ * Reads only the fixed-offset head of a TradeEvent. Everything after the reserves is
+ * variable-length (a string and a vector), and none of it is needed to price a
+ * position — decoding just the prefix is both faster and immune to trailing changes.
+ */
+export function decodeTradeEventPrefix(data: Buffer): TradeUpdate | null {
+  // 8 disc + 32 mint + 8 sol + 8 token + 1 isBuy + 32 user + 8 ts + 8 + 8 + 8 + 8
+  if (data.length < 129) return null;
+  return {
+    mint: new PublicKey(data.subarray(8, 40)),
+    isBuy: data[56] === 1,
+    virtualQuoteReserves: data.readBigUInt64LE(97),
+    virtualTokenReserves: data.readBigUInt64LE(105),
+    realTokenReserves: data.readBigUInt64LE(121),
+  };
+}
+
 const meta = (pubkey: PublicKey, isWritable: boolean, isSigner = false): AccountMeta => ({
   pubkey,
   isWritable,
@@ -336,14 +366,15 @@ export function buildCloseAccountInstruction(
 }
 
 /** Constant-product quote: SOL in -> tokens out, ignoring fees. */
-export function tokensForSol(curve: BondingCurve, solIn: bigint): bigint {
+export function tokensForSol(curve: CurveQuote, solIn: bigint): bigint {
   if (solIn <= 0n) return 0n;
   const out = (solIn * curve.virtualTokenReserves) / (curve.virtualQuoteReserves + solIn);
-  return out > curve.realTokenReserves ? curve.realTokenReserves : out;
+  const available = curve.realTokenReserves;
+  return available !== undefined && out > available ? available : out;
 }
 
 /** Constant-product quote: tokens in -> SOL out, ignoring fees. */
-export function solForTokens(curve: BondingCurve, tokensIn: bigint): bigint {
+export function solForTokens(curve: CurveQuote, tokensIn: bigint): bigint {
   if (tokensIn <= 0n) return 0n;
   return (tokensIn * curve.virtualQuoteReserves) / (curve.virtualTokenReserves + tokensIn);
 }
@@ -353,7 +384,7 @@ export function solForTokens(curve: BondingCurve, tokensIn: bigint): bigint {
  * takes an exact token amount, so this is what the wallet actually pays — not the
  * amount that was asked for.
  */
-export function solCostForTokens(curve: BondingCurve, tokensOut: bigint): bigint {
+export function solCostForTokens(curve: CurveQuote, tokensOut: bigint): bigint {
   if (tokensOut <= 0n) return 0n;
   if (tokensOut >= curve.virtualTokenReserves) return 0n;
   return (tokensOut * curve.virtualQuoteReserves) / (curve.virtualTokenReserves - tokensOut);

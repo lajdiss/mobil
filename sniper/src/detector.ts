@@ -1,138 +1,149 @@
-import { Connection, PublicKey } from '@solana/web3.js';
-import bs58 from 'bs58';
+import { Connection } from '@solana/web3.js';
 import {
-  ANCHOR_CPI_EVENT_PREFIX,
   CREATE_EVENT_DISCRIMINATOR,
   PUMP_PROGRAM,
+  TRADE_EVENT_DISCRIMINATOR,
   decodeCreateEvent,
+  decodeTradeEventPrefix,
   type CreateEvent,
+  type TradeUpdate,
 } from './pump.js';
 
 export interface DetectedToken extends CreateEvent {
   signature: string;
   detectedAt: number;
-  latencyMs: number;
 }
 
+const LOG_DATA_PREFIX = 'Program data: ';
+
 /**
- * Watches for new pump.fun launches.
+ * pump.fun produces well over ten events a second around the clock, so this much
+ * silence means the stream is dead rather than quiet.
+ */
+const STALE_STREAM_MS = 30_000;
+
+/**
+ * Single log subscription that carries everything the bot needs.
  *
- * The program emits CreateEvent via `emit_cpi!`, so the payload lives in an inner
- * instruction rather than a "Program data:" log line. logsSubscribe only gives us
- * logs, so we use it as a trigger and then fetch the transaction to read the event.
- * That round trip is why a public RPC lands you several slots behind.
+ * pump.fun emits its events both as an inner instruction (emit_cpi) and as a
+ * "Program data:" log line, so both CreateEvent and TradeEvent can be decoded straight
+ * out of the log stream. That removes the getTransaction round trip the entry path used
+ * to depend on — which cost hundreds of milliseconds and silently dropped every launch
+ * whose transaction was not confirmed yet.
+ *
+ * TradeEvents arrive for every token, roughly 25 a second, and carry the reserves. They
+ * price open positions faster than a per-account subscription can, from one stream.
  */
 export class Detector {
   private subscriptionId: number | null = null;
-  private seen = new Set<string>();
+  private seenCreates = new Set<string>();
+  private watchdog: NodeJS.Timeout | null = null;
+  private lastEventAt = 0;
+  private resubscribes = 0;
+
+  readonly counters = { creates: 0, trades: 0, undecodable: 0 };
 
   constructor(
     private readonly connection: Connection,
     private readonly onToken: (token: DetectedToken) => void,
+    private readonly onTrade: (trade: TradeUpdate) => void,
     private readonly onError: (message: string) => void,
   ) {}
 
+  /** Everything depends on this stream, so its health is worth reporting. */
+  health() {
+    const silentMs = this.lastEventAt ? Date.now() - this.lastEventAt : null;
+    return {
+      alive: silentMs !== null && silentMs < STALE_STREAM_MS,
+      silentMs,
+      resubscribes: this.resubscribes,
+      ...this.counters,
+    };
+  }
+
   start() {
+    this.subscribe();
+    // A subscription that never establishes, or one that dies later, leaves the bot
+    // blind with nothing in the logs to say so. Silence is the only symptom, so it
+    // has to be the trigger.
+    this.watchdog = setInterval(() => {
+      if (this.lastEventAt === 0) return void this.resubscribe('stream never delivered');
+      if (Date.now() - this.lastEventAt > STALE_STREAM_MS) {
+        void this.resubscribe(`no events for ${Math.round((Date.now() - this.lastEventAt) / 1000)}s`);
+      }
+    }, STALE_STREAM_MS);
+  }
+
+  private subscribe() {
     this.subscriptionId = this.connection.onLogs(
       PUMP_PROGRAM,
       (logs) => {
+        this.lastEventAt = Date.now();
         if (logs.err) return;
-        if (!logs.logs.some((l) => l.includes('Instruction: Create'))) return;
-        if (this.seen.has(logs.signature)) return;
-        this.seen.add(logs.signature);
-        if (this.seen.size > 5000) this.seen.clear();
-        this.counters.noticed++;
-        void this.hydrate(logs.signature, Date.now());
+        for (const line of logs.logs) {
+          if (!line.startsWith(LOG_DATA_PREFIX)) continue;
+          this.handleEvent(line.slice(LOG_DATA_PREFIX.length), logs.signature);
+        }
       },
       'processed',
     );
   }
 
-  /** Launches seen in the logs, and those we failed to read the details for. */
-  readonly counters = { noticed: 0, hydrated: 0, dropped: 0 };
+  private async resubscribe(reason: string) {
+    this.resubscribes++;
+    this.onError(`event stream looks dead (${reason}) — resubscribing`);
+    if (this.subscriptionId !== null) {
+      await this.connection.removeOnLogsListener(this.subscriptionId).catch(() => {});
+      this.subscriptionId = null;
+    }
+    this.lastEventAt = 0;
+    this.subscribe();
+  }
 
-  private async hydrate(signature: string, noticedAt: number) {
+  private handleEvent(encoded: string, signature: string) {
+    let data: Buffer;
     try {
-      // logsSubscribe fires at processed, but the transaction is only fetchable once
-      // confirmed. Without retrying, every launch we hear about too early is dropped.
-      let tx = null;
-      for (let attempt = 0; attempt < 5 && !tx; attempt++) {
-        if (attempt > 0) await new Promise((r) => setTimeout(r, 400 * attempt));
-        tx = await this.connection
-          .getTransaction(signature, { maxSupportedTransactionVersion: 0, commitment: 'confirmed' })
-          .catch(() => null);
-      }
-      if (!tx?.meta) {
-        this.counters.dropped++;
+      data = Buffer.from(encoded, 'base64');
+    } catch {
+      this.counters.undecodable++;
+      return;
+    }
+    if (data.length < 8) return;
+    const discriminator = data.subarray(0, 8);
+
+    try {
+      if (discriminator.equals(TRADE_EVENT_DISCRIMINATOR)) {
+        const trade = decodeTradeEventPrefix(data);
+        if (trade) {
+          this.counters.trades++;
+          this.onTrade(trade);
+        }
         return;
       }
 
-      const keys = tx.transaction.message.getAccountKeys({
-        accountKeysFromLookups: tx.meta.loadedAddresses,
-      });
+      if (discriminator.equals(CREATE_EVENT_DISCRIMINATOR)) {
+        // The same launch can appear on more than one log line; only act once.
+        if (this.seenCreates.has(signature)) return;
+        this.seenCreates.add(signature);
+        if (this.seenCreates.size > 5000) this.seenCreates.clear();
 
-      for (const inner of tx.meta.innerInstructions || []) {
-        for (const ix of inner.instructions) {
-          if (!keys.get(ix.programIdIndex)?.equals(PUMP_PROGRAM)) continue;
-          const data = Buffer.from(bs58.decode(ix.data));
-          if (!data.subarray(0, 8).equals(ANCHOR_CPI_EVENT_PREFIX)) continue;
-          const payload = data.subarray(8);
-          if (!payload.subarray(0, 8).equals(CREATE_EVENT_DISCRIMINATOR)) continue;
-
-          const event = decodeCreateEvent(payload);
-          this.counters.hydrated++;
-          this.onToken({
-            ...event,
-            signature,
-            detectedAt: noticedAt,
-            latencyMs: Date.now() - noticedAt,
-          });
-          return;
-        }
+        this.counters.creates++;
+        this.onToken({ ...decodeCreateEvent(data), signature, detectedAt: Date.now() });
       }
-      // Reached only when no CreateEvent was found in the transaction.
-      this.counters.dropped++;
     } catch (err) {
-      this.counters.dropped++;
-      this.onError(`failed to read create tx ${signature.slice(0, 8)}: ${(err as Error).message}`);
+      this.counters.undecodable++;
+      this.onError(`could not decode a pump.fun event: ${(err as Error).message}`);
     }
   }
 
   async stop() {
+    if (this.watchdog) {
+      clearInterval(this.watchdog);
+      this.watchdog = null;
+    }
     if (this.subscriptionId !== null) {
       await this.connection.removeOnLogsListener(this.subscriptionId);
       this.subscriptionId = null;
     }
-  }
-}
-
-export interface CurveWatch {
-  mint: PublicKey;
-  onUpdate: (data: Buffer) => void;
-}
-
-/** Push-based price updates for open positions; cheaper than polling on a free RPC. */
-export class CurveWatcher {
-  private subscriptions = new Map<string, number>();
-
-  constructor(private readonly connection: Connection) {}
-
-  watch(curveAddress: PublicKey, onUpdate: (data: Buffer) => void) {
-    const key = curveAddress.toBase58();
-    if (this.subscriptions.has(key)) return;
-    const id = this.connection.onAccountChange(
-      curveAddress,
-      (info) => onUpdate(info.data),
-      'processed',
-    );
-    this.subscriptions.set(key, id);
-  }
-
-  async unwatch(curveAddress: PublicKey) {
-    const key = curveAddress.toBase58();
-    const id = this.subscriptions.get(key);
-    if (id === undefined) return;
-    await this.connection.removeAccountChangeListener(id);
-    this.subscriptions.delete(key);
   }
 }

@@ -1,13 +1,7 @@
 import { PublicKey } from '@solana/web3.js';
 import type { Config } from './config.js';
-import { CurveWatcher } from './detector.js';
 import { Executor, lamportsToSol } from './executor.js';
-import {
-  bondingCurvePda,
-  decodeBondingCurve,
-  solForTokens,
-  type BondingCurve,
-} from './pump.js';
+import { solForTokens, type CurveQuote, type TradeUpdate } from './pump.js';
 
 export type PositionStatus = 'open' | 'closing' | 'closed' | 'failed';
 export type ExitReason = 'take-profit' | 'stop-loss' | 'trailing-stop' | 'timeout' | 'manual';
@@ -71,7 +65,6 @@ export class PositionManager {
 
   constructor(
     private readonly executor: Executor,
-    private readonly watcher: CurveWatcher,
     private readonly config: Config,
     private readonly onChange: (position: Position) => void,
     private readonly onLog: (message: string) => void,
@@ -134,11 +127,6 @@ export class PositionManager {
     this.positions.set(position.mint, position);
     this.onChange(position);
 
-    const mint = new PublicKey(position.mint);
-    this.watcher.watch(bondingCurvePda(mint), (data) => {
-      this.updateFromCurve(position.mint, data, 'stream');
-    });
-
     if (this.config.maxHoldSeconds > 0) {
       const timer = setTimeout(() => {
         void this.close(position.mint, 'timeout');
@@ -147,17 +135,14 @@ export class PositionManager {
     }
   }
 
-  private updateFromCurve(mint: string, data: Buffer, source: 'stream' | 'poll') {
-    let curve;
-    try {
-      curve = decodeBondingCurve(data);
-    } catch {
-      return;
-    }
-    this.applyCurve(mint, curve, source);
+  /** Fed from the shared log stream; most trades are for tokens we do not hold. */
+  onTrade(trade: TradeUpdate) {
+    const mint = trade.mint.toBase58();
+    if (!this.positions.has(mint)) return;
+    this.applyCurve(mint, trade, 'stream');
   }
 
-  private applyCurve(mint: string, curve: BondingCurve, source: 'stream' | 'poll') {
+  private applyCurve(mint: string, curve: CurveQuote, source: 'stream' | 'poll') {
     const position = this.positions.get(mint);
     if (!position || position.status !== 'open') return;
 
@@ -221,7 +206,7 @@ export class PositionManager {
     return null;
   }
 
-  async close(mint: string, reason: ExitReason, knownCurve?: BondingCurve) {
+  async close(mint: string, reason: ExitReason, knownCurve?: CurveQuote) {
     const position = this.positions.get(mint);
     if (!position || position.status !== 'open') return;
 
@@ -283,7 +268,6 @@ export class PositionManager {
     }
 
     this.onChange(position);
-    await this.watcher.unwatch(bondingCurvePda(new PublicKey(position.mint)));
   }
 
   /** Panic path: closing one at a time would leave the last positions waiting. */
