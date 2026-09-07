@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="cs">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>pump.fun sniper</title>
+<style>
+  :root {
+    --bg: #0d1017; --panel: #151a23; --line: #232a36;
+    --text: #e6e9ef; --dim: #8b95a7;
+    --green: #3fb950; --red: #f85149; --amber: #d29922; --blue: #58a6ff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  header {
+    display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+    padding: 12px 20px; border-bottom: 1px solid var(--line); background: var(--panel);
+    position: sticky; top: 0; z-index: 10;
+  }
+  h1 { font-size: 15px; margin: 0; font-weight: 600; }
+  .badge { padding: 3px 9px; border-radius: 4px; font-size: 12px; font-weight: 600; }
+  .badge.live { background: rgba(248,81,73,.15); color: var(--red); border: 1px solid var(--red); }
+  .badge.dry { background: rgba(88,166,255,.12); color: var(--blue); border: 1px solid var(--blue); }
+  .spacer { flex: 1; }
+  .stat { color: var(--dim); font-size: 13px; }
+  .stat b { color: var(--text); font-weight: 600; }
+  button {
+    font: inherit; padding: 7px 14px; border-radius: 5px; cursor: pointer;
+    border: 1px solid var(--line); background: #1d2430; color: var(--text);
+  }
+  button:hover { border-color: var(--dim); }
+  button.arm { background: var(--green); border-color: var(--green); color: #06240c; font-weight: 700; }
+  button.disarm { background: var(--amber); border-color: var(--amber); color: #241a02; font-weight: 700; }
+  button.panic { background: var(--red); border-color: var(--red); color: #2a0705; font-weight: 700; }
+  main { display: grid; grid-template-columns: 1fr 340px; gap: 14px; padding: 14px; align-items: start; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
+  section > h2 {
+    margin: 0; padding: 9px 14px; font-size: 12px; letter-spacing: .06em;
+    text-transform: uppercase; color: var(--dim); border-bottom: 1px solid var(--line);
+  }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { padding: 7px 12px; text-align: left; border-bottom: 1px solid var(--line); font-size: 13px; }
+  th { color: var(--dim); font-weight: 500; font-size: 11px; text-transform: uppercase; }
+  tbody tr:last-child td { border-bottom: none; }
+  .pos { color: var(--green); } .neg { color: var(--red); } .dim { color: var(--dim); }
+  .mint { color: var(--dim); font-size: 11px; }
+  .empty { padding: 22px 14px; color: var(--dim); text-align: center; font-size: 13px; }
+  .cfg { padding: 12px 14px; display: grid; gap: 9px; }
+  .cfg label { display: grid; grid-template-columns: 1fr 88px; align-items: center; gap: 8px; font-size: 13px; color: var(--dim); }
+  .cfg input {
+    font: inherit; padding: 5px 8px; border-radius: 4px; text-align: right;
+    background: #0f131a; border: 1px solid var(--line); color: var(--text);
+  }
+  .logs { max-height: 260px; overflow-y: auto; padding: 10px 14px; }
+  .logs div { font-size: 12px; color: var(--dim); padding: 1px 0; white-space: pre-wrap; word-break: break-word; }
+  .feed { max-height: 340px; overflow-y: auto; }
+  .tag { font-size: 11px; padding: 1px 6px; border-radius: 3px; }
+  .tag.sniped { background: rgba(63,185,80,.15); color: var(--green); }
+  .tag.skipped { background: rgba(139,149,167,.15); color: var(--dim); }
+  .tag.error { background: rgba(248,81,73,.15); color: var(--red); }
+  .warn { padding: 9px 20px; background: rgba(248,81,73,.1); border-bottom: 1px solid var(--red); color: var(--red); font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="warn" id="liveWarn" hidden>
+  LIVE REŽIM — bot utrácí skutečné SOL z peněženky níže. Používej výhradně burner peněženku.
+</div>
+<header>
+  <h1>pump.fun sniper</h1>
+  <span class="badge" id="mode">…</span>
+  <span class="stat">peněženka <b id="wallet">…</b></span>
+  <span class="stat">zůstatek <b id="balance">…</b></span>
+  <span class="stat">dnes utraceno <b id="spent">…</b></span>
+  <span class="spacer"></span>
+  <span class="stat" id="stats"></span>
+  <button id="armBtn">…</button>
+  <button class="panic" id="panicBtn">PANIC SELL</button>
+</header>
+
+<main>
+  <div style="display:grid;gap:14px">
+    <section>
+      <h2>Otevřené pozice</h2>
+      <table>
+        <thead><tr><th>Token</th><th>Vstup</th><th>Nyní</th><th>PnL</th><th>Stav</th><th></th></tr></thead>
+        <tbody id="positions"></tbody>
+      </table>
+      <div class="empty" id="posEmpty">Žádné pozice.</div>
+    </section>
+
+    <section>
+      <h2>Detekované tokeny</h2>
+      <div class="feed">
+        <table>
+          <thead><tr><th>Čas</th><th>Token</th><th>Verdikt</th><th>Důvod</th></tr></thead>
+          <tbody id="feed"></tbody>
+        </table>
+      </div>
+      <div class="empty" id="feedEmpty">Čekám na nové launche…</div>
+    </section>
+  </div>
+
+  <div style="display:grid;gap:14px">
+    <section>
+      <h2>Nastavení</h2>
+      <div class="cfg" id="cfg">
+        <label>Nákup (SOL)<input type="number" step="0.001" min="0" id="buyAmountSol"></label>
+        <label>Take profit (%)<input type="number" step="1" min="0" id="takeProfitPct"></label>
+        <label>Stop loss (%)<input type="number" step="1" min="0" id="stopLossPct"></label>
+        <label>Trailing stop (%)<input type="number" step="1" min="0" id="trailingStopPct"></label>
+        <label>Max držení (s)<input type="number" step="10" min="0" id="maxHoldSeconds"></label>
+        <label>Slippage (bps)<input type="number" step="50" min="0" id="slippageBps"></label>
+        <label>Priority fee (μL)<input type="number" step="10000" min="0" id="priorityFeeMicroLamports"></label>
+        <label>Max pozic<input type="number" step="1" min="1" id="maxOpenPositions"></label>
+        <label>Denní strop (SOL)<input type="number" step="0.1" min="0" id="dailySpendCapSol"></label>
+        <button id="saveCfg">Uložit</button>
+      </div>
+    </section>
+
+    <section>
+      <h2>Log</h2>
+      <div class="logs" id="logs"></div>
+    </section>
+  </div>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let editing = null;
+let state = null;
+
+// Don't clobber a field while the user is typing in it.
+for (const input of document.querySelectorAll('.cfg input')) {
+  input.addEventListener('focus', () => { editing = input.id; });
+  input.addEventListener('blur', () => { if (editing === input.id) editing = null; });
+}
+
+const fmt = (n, d = 4) => Number(n).toFixed(d);
+const short = (s) => s.slice(0, 4) + '…' + s.slice(-4);
+
+function render(s) {
+  state = s;
+  $('mode').textContent = s.dryRun ? 'DRY RUN' : 'LIVE';
+  $('mode').className = 'badge ' + (s.dryRun ? 'dry' : 'live');
+  $('liveWarn').hidden = s.dryRun;
+  $('wallet').textContent = short(s.wallet);
+  $('wallet').title = s.wallet;
+  $('balance').textContent = fmt(s.balanceSol) + ' SOL';
+  $('spent').textContent = fmt(s.spentTodaySol) + ' / ' + fmt(s.config.dailySpendCapSol, 2) + ' SOL';
+  $('stats').textContent =
+    `detekováno ${s.stats.detected} · prošlo ${s.stats.passed} · nakoupeno ${s.stats.bought} · chyb ${s.stats.errors}`;
+
+  const arm = $('armBtn');
+  arm.textContent = s.armed ? 'DISARM' : 'ARM';
+  arm.className = s.armed ? 'disarm' : 'arm';
+
+  for (const [k, v] of Object.entries(s.config)) {
+    const el = $(k);
+    if (el && editing !== k) el.value = v;
+  }
+
+  const open = s.positions.filter(p => p.status !== 'closed' && p.status !== 'failed');
+  const rows = s.positions.slice(0, 40);
+  $('posEmpty').hidden = rows.length > 0;
+  $('positions').innerHTML = rows.map(p => {
+    const cls = p.pnlPct >= 0 ? 'pos' : 'neg';
+    const canClose = p.status === 'open';
+    return `<tr>
+      <td><b>${esc(p.symbol)}</b> <span class="dim">${esc(p.name)}</span><br><span class="mint">${short(p.mint)}</span></td>
+      <td>${fmt(p.entrySol)}</td>
+      <td>${fmt(p.currentSol)}</td>
+      <td class="${cls}">${p.pnlPct >= 0 ? '+' : ''}${fmt(p.pnlPct, 1)}%</td>
+      <td>${esc(p.status)}${p.exitReason ? '<br><span class="mint">' + esc(p.exitReason) + '</span>' : ''}</td>
+      <td>${canClose ? `<button data-close="${esc(p.mint)}">Prodat</button>` : ''}</td>
+    </tr>`;
+  }).join('');
+
+  $('feedEmpty').hidden = s.feed.length > 0;
+  $('feed').innerHTML = s.feed.slice(0, 50).map(f => `<tr>
+    <td class="dim">${new Date(f.at).toLocaleTimeString()}</td>
+    <td><b>${esc(f.symbol)}</b> <span class="mint">${short(f.mint)}</span></td>
+    <td><span class="tag ${f.verdict}">${esc(f.verdict)}</span></td>
+    <td class="dim">${esc(f.reason || '')}</td>
+  </tr>`).join('');
+
+  $('logs').innerHTML = s.logs.slice(0, 80).map(l => `<div>${esc(l)}</div>`).join('');
+}
+
+function esc(v) {
+  return String(v ?? '').replace(/[&<>"']/g, c =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+$('positions').addEventListener('click', async (e) => {
+  const mint = e.target.getAttribute?.('data-close');
+  if (!mint) return;
+  e.target.disabled = true;
+  await fetch(`/api/positions/${mint}/close`, { method: 'POST' });
+});
+
+$('armBtn').addEventListener('click', async () => {
+  const next = !state?.armed;
+  if (next && state && !state.dryRun) {
+    const ok = confirm('LIVE REŽIM: bot začne nakupovat za skutečné SOL. Pokračovat?');
+    if (!ok) return;
+  }
+  await fetch('/api/armed', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ armed: next }),
+  });
+});
+
+$('panicBtn').addEventListener('click', async () => {
+  if (!confirm('Odzbrojit bota a okamžitě prodat všechny otevřené pozice?')) return;
+  await fetch('/api/panic', { method: 'POST' });
+});
+
+$('saveCfg').addEventListener('click', async () => {
+  const patch = {};
+  for (const input of document.querySelectorAll('.cfg input')) patch[input.id] = Number(input.value);
+  const res = await fetch('/api/config', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) alert((await res.json()).error || 'Uložení selhalo');
+});
+
+function connect() {
+  const ws = new WebSocket(`ws://${location.host}`);
+  ws.onmessage = (e) => {
+    const msg = JSON.parse(e.data);
+    if (msg.type === 'state') render(msg.payload);
+  };
+  ws.onclose = () => setTimeout(connect, 1500);
+}
+connect();
+fetch('/api/state').then(r => r.json()).then(render);
+</script>
+</body>
+</html>
