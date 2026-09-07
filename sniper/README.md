@@ -106,6 +106,42 @@ aspoň den a podívat se, jestli by tvoje nastavení vůbec vydělávalo.
 Živé obchodování zapneš `DRY_RUN=false` v `.env`. Schválně to **nejde** přepnout
 z dashboardu — je to změna, která má vyžadovat vědomý zásah.
 
+## Nasazení na VPS (a ovládání z iPhonu)
+
+Bot **nejde spustit na telefonu** — iOS uspí procesy na pozadí, takže by přestal
+hlídat stop-loss ve chvíli, kdy přepneš aplikaci. Telefon může být jen okno do
+bota, který běží jinde.
+
+Zároveň je VPS správné místo i pro bota obecně: notebook uspíš a otevřené pozice
+zůstanou bez dozoru.
+
+Na čistém Debianu nebo Ubuntu:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/lajdiss/mobil/claude/plzen-dating-app-wu5ryb/sniper/deploy/setup.sh | sudo bash
+```
+
+Skript nainstaluje Node, stáhne repo, vygeneruje `DASHBOARD_TOKEN`, založí
+systemd službu (bot se sám nahodí po restartu serveru) a zavře port ve firewallu.
+Bota **nespustí** — chybí mu klíč k peněžence.
+
+Zbytek vypíše na konci: doplnit `PRIVATE_KEY` do `.env`, spustit `npm run verify`
+a pak `systemctl start sniper`.
+
+Port dashboardu zůstává zavřený schválně: přes veřejný internet by token šel po
+drátě v čitelné podobě. Cesta dovnitř je privátní síť:
+
+```bash
+curl -fsSL https://tailscale.com/install.sh | sudo sh
+sudo tailscale up
+sudo ufw allow in on tailscale0 to any port 8787
+```
+
+Pak stačí Tailscale z App Storu, přihlásit se stejným účtem a v Safari otevřít
+`http://<tailscale-ip>:8787/?token=<token>`. Celé nastavení VPS se dá odklikat
+z iPhonu — server koupíš v prohlížeči a připojíš se přes SSH klienta
+(např. Termius).
+
 ## Jak to funguje
 
 | Fáze | Kde | Co se děje |
