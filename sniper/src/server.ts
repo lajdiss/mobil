@@ -16,6 +16,7 @@ export interface DashboardState {
   config: Record<string, unknown>;
   positions: unknown[];
   performance: unknown;
+  learning: unknown;
   feed: unknown[];
   logs: string[];
   stats: { detected: number; passed: number; bought: number; errors: number; missed: number };

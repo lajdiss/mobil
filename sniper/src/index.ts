@@ -3,6 +3,7 @@ import { loadConfig, loadKeypair, type Config } from './config.js';
 import { Detector, type DetectedToken } from './detector.js';
 import { Executor } from './executor.js';
 import { CreatorHistory, evaluate } from './filters.js';
+import { KeywordMemory } from './learning.js';
 import { MomentumTracker } from './momentum.js';
 import { PositionManager, type Position } from './positions.js';
 import { startServer, type DashboardState } from './server.js';
@@ -16,6 +17,7 @@ const connection = new Connection(config.rpcUrl, {
 
 const executor = new Executor(connection, wallet, config);
 const history = new CreatorHistory();
+const memory = new KeywordMemory(config.learningPath);
 
 interface FeedEntry {
   mint: string;
@@ -57,7 +59,20 @@ function rolloverSpendCap() {
   }
 }
 
-const positions = new PositionManager(executor, config, () => {}, log);
+const positions = new PositionManager(
+  executor,
+  config,
+  (position) => {
+    if (!config.learningEnabled) return;
+    if (position.status !== 'closed' || position.exitSol === undefined) return;
+    if (recorded.has(position.mint)) return;
+    recorded.add(position.mint);
+    const pnlPct = ((position.exitSol - position.entrySol) / position.entrySol) * 100;
+    memory.record(position.name, position.symbol, pnlPct);
+  },
+  log,
+);
+const recorded = new Set<string>();
 
 function canBuy(mint: string): string | null {
   rolloverSpendCap();
@@ -105,6 +120,22 @@ async function handleToken(token: DetectedToken) {
     });
     return;
   }
+  if (config.learningEnabled) {
+    const score = memory.score(token.name, token.symbol, config.learningMinTrades);
+    if (score !== null && score < config.learningMinScore) {
+      pushFeed({
+        mint: token.mint.toBase58(),
+        name: token.name,
+        symbol: token.symbol,
+        creator: token.creator.toBase58(),
+        at: Date.now(),
+        verdict: 'skipped',
+        reason: `learned score ${score.toFixed(1)}% below ${config.learningMinScore}%`,
+      });
+      return;
+    }
+  }
+
   stats.passed++;
 
   // Momentum mode does not enter here — the token has to earn it first.
@@ -242,6 +273,7 @@ const getState = (): DashboardState => ({
   },
   positions: positions.list().map((p) => ({ ...p, tokenAmount: p.tokenAmount.toString() })),
   performance: positions.performance(),
+  learning: memory.stats(),
   feed,
   logs,
   stats: { ...stats, missed: detector.counters.undecodable },

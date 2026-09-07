@@ -99,6 +99,12 @@
   .slip-row { display: flex; gap: 16px; margin-top: 4px; font-size: 13px; color: var(--dim); }
   .slip-row b { color: var(--red); }
   .slip-note { margin-top: 6px; font-size: 11px; color: var(--dim); line-height: 1.45; }
+  .lrn-head { display: flex; gap: 18px; margin-bottom: 10px; }
+  .lrn-head b { font-size: 15px; }
+  .lrn-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 11px; }
+  .lrn-list { margin-top: 4px; font-size: 12px; line-height: 1.7; }
+  .lrn-list span { display: block; }
+  .lrn-list i { font-style: normal; color: var(--dim); font-size: 11px; }
 </style>
 </head>
 <body>
@@ -185,6 +191,22 @@
     </section>
 
     <section>
+      <h2>Co se bot naučil</h2>
+      <div class="perf">
+        <div class="lrn-head">
+          <span><span class="lbl">obchodů</span><b id="lTrades">0</b></span>
+          <span><span class="lbl">slov</span><b id="lWords">0</b></span>
+          <span><span class="lbl">průměr</span><b id="lMean">—</b></span>
+        </div>
+        <div class="verdict" id="lNote"></div>
+        <div class="lrn-cols">
+          <div><div class="lbl">nejlepší</div><div id="lBest" class="lrn-list"></div></div>
+          <div><div class="lbl">nejhorší</div><div id="lWorst" class="lrn-list"></div></div>
+        </div>
+      </div>
+    </section>
+
+    <section>
       <h2>Nastavení</h2>
       <div class="cfg" id="cfg">
         <label>Nákup (SOL)<input type="number" step="0.001" min="0" id="buyAmountSol"></label>
@@ -265,6 +287,7 @@ function render(s) {
   }
 
   renderPerformance(s.performance);
+  renderLearning(s.learning);
 
   const rows = s.positions.slice(0, 40);
   $('posEmpty').hidden = rows.length > 0;
@@ -293,6 +316,31 @@ function render(s) {
   </tr>`).join('');
 
   $('logs').innerHTML = s.logs.slice(0, 80).map(l => `<div>${esc(l)}</div>`).join('');
+}
+
+function renderLearning(l) {
+  if (!l) return;
+  $('lTrades').textContent = l.trades;
+  $('lWords').textContent = l.distinctKeywords;
+  $('lMean').textContent = fmt(l.globalMeanPct, 1) + '%';
+  $('lMean').className = l.globalMeanPct >= 0 ? 'pos' : 'neg';
+
+  const row = (e, cls) =>
+    `<span class="${cls}">${esc(e.word)} ${e.shrunk >= 0 ? '+' : ''}${fmt(e.shrunk, 0)}% <i>(${e.count}x)</i></span>`;
+  $('lBest').innerHTML = l.best.map((e) => row(e, 'pos')).join('') || '<span class="dim">—</span>';
+  $('lWorst').innerHTML = l.worst.map((e) => row(e, 'neg')).join('') || '<span class="dim">—</span>';
+
+  const note = $('lNote');
+  // Say plainly how much of this is still noise, rather than letting the list imply more.
+  if (l.trades < 200) {
+    note.className = 'verdict';
+    note.textContent =
+      `${l.trades} obchodů — na závěry je to zatím málo, skóre zatím nic neblokuje. ` +
+      `Tenhle typ učení potřebuje stovky obchodů, ne desítky.`;
+  } else {
+    note.className = 'verdict good';
+    note.textContent = `${l.trades} obchodů — skóre se už používá při výběru.`;
+  }
 }
 
 function renderPerformance(p) {

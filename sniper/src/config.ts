@@ -70,6 +70,10 @@ export interface Config {
   momentumMinBuys: number;
   momentumMaxAgeSeconds: number;
   momentumMinBuyRatio: number;
+  learningEnabled: boolean;
+  learningMinTrades: number;
+  learningMinScore: number;
+  learningPath: string;
   port: number;
   exitPollMs: number;
   dryRunFillDelayMs: number;
@@ -135,6 +139,12 @@ export function loadConfig(): Config {
     momentumMinBuys: num('MOMENTUM_MIN_BUYS', 8),
     momentumMaxAgeSeconds: num('MOMENTUM_MAX_AGE_SECONDS', 120),
     momentumMinBuyRatio: num('MOMENTUM_MIN_BUY_RATIO', 0.6),
+    // Learning records outcomes from the first trade, but only starts rejecting
+    // candidates once there is enough history for a score to mean anything.
+    learningEnabled: bool('LEARNING_ENABLED', true),
+    learningMinTrades: num('LEARNING_MIN_TRADES', 200),
+    learningMinScore: num('LEARNING_MIN_SCORE', -100),
+    learningPath: process.env.LEARNING_PATH || 'data/keyword-memory.json',
     port: num('PORT', 8787),
     // Backstop for the account stream; a position nobody is watching has no stop-loss.
     exitPollMs: Math.max(500, num('EXIT_POLL_MS', 2000)),
