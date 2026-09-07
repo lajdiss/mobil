@@ -18,6 +18,7 @@ import {
   feeRecipientCandidates,
   bondingCurvePda,
   globalPda,
+  solCostForTokens,
   solForTokens,
   tokensForSol,
   type BondingCurve,
@@ -38,6 +39,12 @@ export interface TradeResult {
 export class Executor {
   private globalState: GlobalState | null = null;
   private globalFetchedAt = 0;
+
+  /** Total pump.fun take per side, read from chain; 1% until Global has loaded. */
+  get feeBps(): number {
+    if (!this.globalState) return 100;
+    return Number(this.globalState.feeBasisPoints + this.globalState.creatorFeeBasisPoints);
+  }
 
   constructor(
     private readonly connection: Connection,
@@ -218,32 +225,56 @@ export class Executor {
     if (curve.isMayhemMode) throw new Error('mayhem mode coin — not supported');
 
     const solIn = solToLamports(solAmount);
-    const expectedTokens = tokensForSol(curve, solIn);
-    if (expectedTokens <= 0n) throw new Error('curve returned zero tokens');
-
-    // Ask for fewer tokens than quoted so front-running does not fail the whole buy.
-    const minTokens = (expectedTokens * BigInt(10_000 - this.config.slippageBps)) / 10_000n;
+    // buy takes an exact token amount and caps the SOL, so asking for fewer tokens does
+    // not protect against slippage — it just spends less. Ask for the full quote and let
+    // maxSolCost absorb any adverse move.
+    const tokens = tokensForSol(curve, solIn);
+    if (tokens <= 0n) throw new Error('curve returned zero tokens');
     const maxSolCost = (solIn * BigInt(10_000 + this.config.slippageBps)) / 10_000n;
+    const expectedCost = solCostForTokens(curve, tokens);
 
     if (this.config.dryRun) {
-      return { result: null, tokenAmount: minTokens, solSpent: solAmount };
+      // Charge the same fee the program would, or dry run reports better results than
+      // live trading would ever produce — and dry run is what the decision rests on.
+      await this.getGlobalState().catch(() => null);
+      const withFee = (expectedCost * BigInt(10_000 + this.feeBps)) / 10_000n;
+      return { result: null, tokenAmount: tokens, solSpent: lamportsToSol(withFee) };
     }
 
     const result = await this.sendWithRecipients(async (feeRecipient, buyback) => {
       const params = this.tradeParams(mint, creator, tokenProgram, feeRecipient, buyback);
       return [
         createAtaIdempotentInstruction(this.wallet.publicKey, this.wallet.publicKey, mint, tokenProgram),
-        buildBuyInstruction(params, minTokens, maxSolCost),
+        buildBuyInstruction(params, tokens, maxSolCost),
       ];
     }, 'buy');
-    return { result, tokenAmount: minTokens, solSpent: solAmount };
+
+    // Reading the wallet before and after would be exact, but both reads sit on the
+    // entry path where latency decides whether the snipe lands at all. The quote plus
+    // the program's own fee is close, and the sell reads the real balance anyway.
+    const withFee = (expectedCost * BigInt(10_000 + this.feeBps)) / 10_000n;
+    return { result, tokenAmount: tokens, solSpent: lamportsToSol(withFee) };
   }
 
-  /** The real balance, not what we think we bought — buys can fill above the minimum. */
+  /**
+   * Distinguishes "the account holds nothing" from "the RPC did not answer". Treating a
+   * failed lookup as a zero balance would abandon a position instead of selling it.
+   */
   private async getTokenBalance(mint: PublicKey, tokenProgram: PublicKey): Promise<bigint> {
     const ata = associatedTokenAddress(this.wallet.publicKey, mint, tokenProgram);
-    const balance = await this.connection.getTokenAccountBalance(ata).catch(() => null);
-    return balance ? BigInt(balance.value.amount) : 0n;
+    let lastError: unknown = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const balance = await this.connection.getTokenAccountBalance(ata, 'confirmed');
+        return BigInt(balance.value.amount);
+      } catch (err) {
+        lastError = err;
+        // A missing account is a real zero, not a transport failure.
+        if (String(err).includes('could not find account')) return 0n;
+        await new Promise((r) => setTimeout(r, 250 * (attempt + 1)));
+      }
+    }
+    throw new Error(`could not read token balance: ${String(lastError)}`);
   }
 
   async sell(
@@ -259,11 +290,10 @@ export class Executor {
     if (!curve) throw new Error('bonding curve not found');
 
     if (this.config.dryRun) {
-      return {
-        result: null,
-        solOut: lamportsToSol(solForTokens(curve, tokenAmount)),
-        rentReclaimed: false,
-      };
+      await this.getGlobalState().catch(() => null);
+      const gross = solForTokens(curve, tokenAmount);
+      const net = (gross * BigInt(10_000 - this.feeBps)) / 10_000n;
+      return { result: null, solOut: lamportsToSol(net), rentReclaimed: false };
     }
 
     const held = await this.getTokenBalance(mint, tokenProgram);

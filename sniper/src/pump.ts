@@ -120,6 +120,8 @@ export interface GlobalState {
   feeRecipients: PublicKey[];
   reservedFeeRecipient: PublicKey;
   buybackFeeRecipients: PublicKey[];
+  feeBasisPoints: bigint;
+  creatorFeeBasisPoints: bigint;
 }
 
 export function decodeGlobal(data: Buffer): GlobalState {
@@ -127,10 +129,12 @@ export function decodeGlobal(data: Buffer): GlobalState {
   r.bool(); // initialized
   r.pubkey(); // authority
   r.pubkey(); // fee_recipient (legacy single)
-  r.skip(8 * 5); // initial reserves, supply, fee bps
+  r.skip(8 * 4); // initial reserves and total supply
+  const feeBasisPoints = r.u64();
   r.pubkey(); // withdraw_authority
   r.bool(); // enable_migrate
-  r.skip(8 * 2); // pool_migration_fee, creator_fee_basis_points
+  r.u64(); // pool_migration_fee
+  const creatorFeeBasisPoints = r.u64();
   const feeRecipients = Array.from({ length: 7 }, () => r.pubkey());
   r.pubkey(); // set_creator_authority
   r.pubkey(); // admin_set_creator_authority
@@ -141,7 +145,13 @@ export function decodeGlobal(data: Buffer): GlobalState {
   for (let i = 0; i < 7; i++) r.pubkey(); // reserved_fee_recipients
   r.bool(); // is_cashback_enabled
   const buybackFeeRecipients = Array.from({ length: 8 }, () => r.pubkey());
-  return { feeRecipients, reservedFeeRecipient, buybackFeeRecipients };
+  return {
+    feeRecipients,
+    reservedFeeRecipient,
+    buybackFeeRecipients,
+    feeBasisPoints,
+    creatorFeeBasisPoints,
+  };
 }
 
 /**
@@ -336,6 +346,17 @@ export function tokensForSol(curve: BondingCurve, solIn: bigint): bigint {
 export function solForTokens(curve: BondingCurve, tokensIn: bigint): bigint {
   if (tokensIn <= 0n) return 0n;
   return (tokensIn * curve.virtualQuoteReserves) / (curve.virtualTokenReserves + tokensIn);
+}
+
+/**
+ * Inverse of tokensForSol: what buying this many tokens costs. The buy instruction
+ * takes an exact token amount, so this is what the wallet actually pays — not the
+ * amount that was asked for.
+ */
+export function solCostForTokens(curve: BondingCurve, tokensOut: bigint): bigint {
+  if (tokensOut <= 0n) return 0n;
+  if (tokensOut >= curve.virtualTokenReserves) return 0n;
+  return (tokensOut * curve.virtualQuoteReserves) / (curve.virtualTokenReserves - tokensOut);
 }
 
 export const pickRandom = <T>(items: T[]): T => items[Math.floor(Math.random() * items.length)];

@@ -18,7 +18,7 @@ export interface DashboardState {
   performance: unknown;
   feed: unknown[];
   logs: string[];
-  stats: { detected: number; passed: number; bought: number; errors: number };
+  stats: { detected: number; passed: number; bought: number; errors: number; missed: number };
 }
 
 export interface ServerHooks {

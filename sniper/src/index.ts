@@ -29,7 +29,7 @@ interface FeedEntry {
 
 const feed: FeedEntry[] = [];
 const logs: string[] = [];
-const stats = { detected: 0, passed: 0, bought: 0, errors: 0 };
+const stats = { detected: 0, passed: 0, bought: 0, errors: 0, missed: 0 };
 
 let armed = false;
 let balanceSol = 0;
@@ -65,9 +65,12 @@ const positions = new PositionManager(
   log,
 );
 
-function canBuy(): string | null {
+function canBuy(mint: string): string | null {
   rolloverSpendCap();
   if (!armed) return 'not armed';
+  // Positions are keyed by mint, so buying the same one twice would overwrite the
+  // first record and silently erase it from the results.
+  if (positions.has(mint)) return 'already traded this token';
   if (positions.openCount() >= config.maxOpenPositions) return 'max open positions reached';
   if (spentTodaySol + config.buyAmountSol > config.dailySpendCapSol) return 'daily spend cap reached';
   // Dry run exists to evaluate the strategy before funding anything, so the wallet
@@ -97,7 +100,7 @@ async function handleToken(token: DetectedToken) {
   }
   stats.passed++;
 
-  const blocker = canBuy();
+  const blocker = canBuy(token.mint.toBase58());
   if (blocker) {
     pushFeed({
       mint: token.mint.toBase58(),
@@ -198,7 +201,7 @@ const getState = (): DashboardState => ({
   performance: positions.performance(),
   feed,
   logs,
-  stats,
+  stats: { ...stats, missed: detector.counters.dropped },
 });
 
 const EDITABLE_NUMERIC = new Set([

@@ -41,19 +41,31 @@ export class Detector {
         if (this.seen.has(logs.signature)) return;
         this.seen.add(logs.signature);
         if (this.seen.size > 5000) this.seen.clear();
+        this.counters.noticed++;
         void this.hydrate(logs.signature, Date.now());
       },
       'processed',
     );
   }
 
+  /** Launches seen in the logs, and those we failed to read the details for. */
+  readonly counters = { noticed: 0, hydrated: 0, dropped: 0 };
+
   private async hydrate(signature: string, noticedAt: number) {
     try {
-      const tx = await this.connection.getTransaction(signature, {
-        maxSupportedTransactionVersion: 0,
-        commitment: 'confirmed',
-      });
-      if (!tx?.meta) return;
+      // logsSubscribe fires at processed, but the transaction is only fetchable once
+      // confirmed. Without retrying, every launch we hear about too early is dropped.
+      let tx = null;
+      for (let attempt = 0; attempt < 5 && !tx; attempt++) {
+        if (attempt > 0) await new Promise((r) => setTimeout(r, 400 * attempt));
+        tx = await this.connection
+          .getTransaction(signature, { maxSupportedTransactionVersion: 0, commitment: 'confirmed' })
+          .catch(() => null);
+      }
+      if (!tx?.meta) {
+        this.counters.dropped++;
+        return;
+      }
 
       const keys = tx.transaction.message.getAccountKeys({
         accountKeysFromLookups: tx.meta.loadedAddresses,
@@ -68,6 +80,7 @@ export class Detector {
           if (!payload.subarray(0, 8).equals(CREATE_EVENT_DISCRIMINATOR)) continue;
 
           const event = decodeCreateEvent(payload);
+          this.counters.hydrated++;
           this.onToken({
             ...event,
             signature,
@@ -77,7 +90,10 @@ export class Detector {
           return;
         }
       }
+      // Reached only when no CreateEvent was found in the transaction.
+      this.counters.dropped++;
     } catch (err) {
+      this.counters.dropped++;
       this.onError(`failed to read create tx ${signature.slice(0, 8)}: ${(err as Error).message}`);
     }
   }

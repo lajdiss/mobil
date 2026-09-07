@@ -37,10 +37,11 @@ export interface Position {
   /** Where the price update that triggered the exit came from. */
   triggerSource?: 'stream' | 'poll';
   lastSeenAt?: number;
+  sellAttempts?: number;
 }
 
-/** pump.fun takes roughly 1% on each side, so a round trip costs about this much. */
-const ROUND_TRIP_FEE_PCT = 2;
+/** A failed exit is retried rather than abandoned, but not forever. */
+const MAX_SELL_ATTEMPTS = 4;
 
 export interface Performance {
   closed: number;
@@ -76,6 +77,10 @@ export class PositionManager {
     private readonly onLog: (message: string) => void,
   ) {}
 
+  has(mint: string): boolean {
+    return this.positions.has(mint);
+  }
+
   list(): Position[] {
     return [...this.positions.values()].sort((a, b) => b.openedAt - a.openedAt);
   }
@@ -101,8 +106,10 @@ export class PositionManager {
       .map((p) => p.overshootPct as number);
 
     const { takeProfitPct, stopLossPct } = this.config;
+    // Both sides of the round trip, read from the program rather than assumed.
+    const roundTripFeePct = (this.executor.feeBps / 100) * 2;
     // w·(TP − fee) = (1 − w)·(SL + fee)  ->  w = (SL + fee) / (TP + SL)
-    const breakEven = ((stopLossPct + ROUND_TRIP_FEE_PCT) / (takeProfitPct + stopLossPct)) * 100;
+    const breakEven = ((stopLossPct + roundTripFeePct) / (takeProfitPct + stopLossPct)) * 100;
 
     return {
       closed: results.length,
@@ -252,19 +259,36 @@ export class PositionManager {
           (rentReclaimed ? ' (rent reclaimed)' : ''),
       );
     } catch (err) {
-      position.status = 'failed';
       position.error = (err as Error).message;
-      this.onLog(`sell failed for ${position.symbol}: ${position.error}`);
+      position.sellAttempts = (position.sellAttempts ?? 0) + 1;
+
+      // Abandoning a position because one sell failed is the worst outcome there is:
+      // it means holding a token the exit rules already decided to get out of. Go back
+      // to open so the stream, the poll and this retry can all try again.
+      if (position.sellAttempts < MAX_SELL_ATTEMPTS) {
+        position.status = 'open';
+        this.onLog(
+          `sell failed for ${position.symbol} (attempt ${position.sellAttempts}): ${position.error} — retrying`,
+        );
+        this.onChange(position);
+        const backoffMs = 1000 * 2 ** (position.sellAttempts - 1);
+        setTimeout(() => void this.close(mint, reason), backoffMs);
+        return;
+      }
+
+      position.status = 'failed';
+      this.onLog(
+        `sell failed for ${position.symbol} after ${position.sellAttempts} attempts: ${position.error}`,
+      );
     }
 
     this.onChange(position);
     await this.watcher.unwatch(bondingCurvePda(new PublicKey(position.mint)));
   }
 
+  /** Panic path: closing one at a time would leave the last positions waiting. */
   async closeAll(reason: ExitReason = 'manual') {
     const open = this.list().filter((p) => p.status === 'open');
-    for (const position of open) {
-      await this.close(position.mint, reason);
-    }
+    await Promise.allSettled(open.map((position) => this.close(position.mint, reason)));
   }
 }

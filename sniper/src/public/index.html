@@ -243,7 +243,8 @@ function render(s) {
   $('balance').textContent = fmt(s.balanceSol) + ' SOL';
   $('spent').textContent = fmt(s.spentTodaySol) + ' / ' + fmt(s.config.dailySpendCapSol, 2) + ' SOL';
   $('stats').textContent =
-    `detekováno ${s.stats.detected} · prošlo ${s.stats.passed} · nakoupeno ${s.stats.bought} · chyb ${s.stats.errors}`;
+    `detekováno ${s.stats.detected} · prošlo ${s.stats.passed} · nakoupeno ${s.stats.bought}` +
+    ` · nestihnuto ${s.stats.missed} · chyb ${s.stats.errors}`;
 
   const arm = $('armBtn');
   arm.textContent = s.armed ? 'DISARM' : 'ARM';
