@@ -219,6 +219,9 @@ async function enterPosition(token: DetectedToken) {
       openedAt: Date.now(),
       status: 'open',
       buySignature: result?.signature,
+      history: [0],
+      progressPct: 0,
+      marketCapSol: 0,
     };
     positions.add(position);
 

@@ -32,7 +32,18 @@ export interface Position {
   triggerSource?: 'stream' | 'poll';
   lastSeenAt?: number;
   sellAttempts?: number;
+  /** Recent PnL samples, for the sparkline — the shape matters more than the number. */
+  history: number[];
+  /** How far the bonding curve has filled toward graduation, 0-100. */
+  progressPct: number;
+  marketCapSol: number;
 }
+
+/** Tokens left in the curve at launch; what remains measures progress to graduation. */
+const INITIAL_REAL_TOKEN_RESERVES = 793_100_000_000_000n;
+
+/** Keeps the sparkline cheap and the state payload small. */
+const HISTORY_SAMPLES = 40;
 
 /** A failed exit is retried rather than abandoned, but not forever. */
 const MAX_SELL_ATTEMPTS = 4;
@@ -184,6 +195,23 @@ export class PositionManager {
     position.pnlPct =
       position.entrySol > 0 ? ((position.currentSol - position.entrySol) / position.entrySol) * 100 : 0;
     position.lastSeenAt = Date.now();
+
+    position.history.push(position.pnlPct);
+    if (position.history.length > HISTORY_SAMPLES) position.history.shift();
+
+    if (curve.realTokenReserves !== undefined) {
+      const sold = INITIAL_REAL_TOKEN_RESERVES - curve.realTokenReserves;
+      position.progressPct = Math.min(
+        100,
+        Math.max(0, Number((sold * 1000n) / INITIAL_REAL_TOKEN_RESERVES) / 10),
+      );
+    }
+    // Price per token times supply, in SOL — easier to read than raw reserves.
+    if (curve.virtualTokenReserves > 0n) {
+      const supply = 1_000_000_000; // pump.fun mints a fixed 1B supply
+      position.marketCapSol =
+        (Number(curve.virtualQuoteReserves) / Number(curve.virtualTokenReserves)) * supply;
+    }
     this.onChange(position);
 
     const exit = this.checkExit(position);
