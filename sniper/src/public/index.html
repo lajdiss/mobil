@@ -37,6 +37,16 @@
   button.panic { background: var(--red); border-color: var(--red); color: #2a0705; font-weight: 700; }
   main { display: grid; grid-template-columns: 1fr 340px; gap: 14px; padding: 14px; align-items: start; }
   @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  @media (max-width: 600px) {
+    header { gap: 8px 12px; padding: 10px 12px; }
+    .spacer { display: none; }
+    #stats { flex-basis: 100%; font-size: 12px; }
+    header button { flex: 1; padding: 11px 12px; }
+    main { padding: 10px; gap: 10px; }
+    th, td { padding: 8px 9px; font-size: 12px; }
+    .cfg label { grid-template-columns: 1fr 96px; }
+    .cfg input, #saveCfg { padding: 10px 8px; }
+  }
   section { background: var(--panel); border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
   section > h2 {
     margin: 0; padding: 9px 14px; font-size: 12px; letter-spacing: .06em;
@@ -66,6 +76,10 @@
 </style>
 </head>
 <body>
+<div class="warn" id="authWarn" hidden>
+  Chybí nebo neplatí přístupový token. Otevři dashboard přes odkaz s <code>?token=…</code>,
+  který bot vypsal do terminálu při startu.
+</div>
 <div class="warn" id="liveWarn" hidden>
   LIVE REŽIM — bot utrácí skutečné SOL z peněženky níže. Používej výhradně burner peněženku.
 </div>
@@ -133,6 +147,22 @@ const $ = (id) => document.getElementById(id);
 let editing = null;
 let state = null;
 
+// Token arrives as ?token=… once; keep it locally so later visits and the
+// WebSocket reconnects stay authenticated without it sitting in the URL bar.
+const urlToken = new URLSearchParams(location.search).get('token');
+if (urlToken) {
+  try { localStorage.setItem('dashboardToken', urlToken); } catch {}
+  history.replaceState(null, '', location.pathname);
+}
+let token = '';
+try { token = urlToken || localStorage.getItem('dashboardToken') || ''; } catch { token = urlToken || ''; }
+
+const api = (path, init = {}) =>
+  fetch(path, {
+    ...init,
+    headers: { ...(init.headers || {}), ...(token ? { 'x-dashboard-token': token } : {}) },
+  });
+
 // Don't clobber a field while the user is typing in it.
 for (const input of document.querySelectorAll('.cfg input')) {
   input.addEventListener('focus', () => { editing = input.id; });
@@ -199,7 +229,7 @@ $('positions').addEventListener('click', async (e) => {
   const mint = e.target.getAttribute?.('data-close');
   if (!mint) return;
   e.target.disabled = true;
-  await fetch(`/api/positions/${mint}/close`, { method: 'POST' });
+  await api(`/api/positions/${mint}/close`, { method: 'POST' });
 });
 
 $('armBtn').addEventListener('click', async () => {
@@ -208,7 +238,7 @@ $('armBtn').addEventListener('click', async () => {
     const ok = confirm('LIVE REŽIM: bot začne nakupovat za skutečné SOL. Pokračovat?');
     if (!ok) return;
   }
-  await fetch('/api/armed', {
+  await api('/api/armed', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ armed: next }),
   });
@@ -216,29 +246,43 @@ $('armBtn').addEventListener('click', async () => {
 
 $('panicBtn').addEventListener('click', async () => {
   if (!confirm('Odzbrojit bota a okamžitě prodat všechny otevřené pozice?')) return;
-  await fetch('/api/panic', { method: 'POST' });
+  await api('/api/panic', { method: 'POST' });
 });
 
 $('saveCfg').addEventListener('click', async () => {
   const patch = {};
   for (const input of document.querySelectorAll('.cfg input')) patch[input.id] = Number(input.value);
-  const res = await fetch('/api/config', {
+  const res = await api('/api/config', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(patch),
   });
   if (!res.ok) alert((await res.json()).error || 'Uložení selhalo');
 });
 
+function showAuthError() {
+  document.getElementById('authWarn').hidden = false;
+}
+
 function connect() {
-  const ws = new WebSocket(`ws://${location.host}`);
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  const query = token ? `?token=${encodeURIComponent(token)}` : '';
+  const ws = new WebSocket(`${proto}://${location.host}${query}`);
   ws.onmessage = (e) => {
     const msg = JSON.parse(e.data);
     if (msg.type === 'state') render(msg.payload);
   };
-  ws.onclose = () => setTimeout(connect, 1500);
+  ws.onclose = (e) => {
+    if (e.code === 4001) { showAuthError(); return; }
+    setTimeout(connect, 1500);
+  };
 }
-connect();
-fetch('/api/state').then(r => r.json()).then(render);
+
+api('/api/state')
+  .then((r) => {
+    if (r.status === 401) { showAuthError(); return null; }
+    return r.json();
+  })
+  .then((s) => { if (s) { render(s); connect(); } });
 </script>
 </body>
 </html>

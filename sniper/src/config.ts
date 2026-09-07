@@ -58,11 +58,21 @@ export interface Config {
   blockedNamePatterns: string[];
   maxCreatorLaunchesPerHour: number;
   port: number;
+  dashboardToken: string;
+  bindHost: string;
 }
 
 export function loadConfig(): Config {
   const rpcUrl = process.env.RPC_URL || 'https://api.mainnet-beta.solana.com';
   const wsUrl = process.env.WS_URL || rpcUrl.replace(/^http/, 'ws');
+  const dashboardToken = (process.env.DASHBOARD_TOKEN || '').trim();
+
+  if (dashboardToken && dashboardToken.length < 16) {
+    throw new Error(
+      'DASHBOARD_TOKEN must be at least 16 characters — it is the only thing standing ' +
+        'between your network and the ARM button.',
+    );
+  }
 
   const cfg: Config = {
     rpcUrl,
@@ -88,6 +98,10 @@ export function loadConfig(): Config {
       .filter(Boolean),
     maxCreatorLaunchesPerHour: num('MAX_CREATOR_LAUNCHES_PER_HOUR', 1),
     port: num('PORT', 8787),
+    dashboardToken,
+    // Without a token the dashboard has no access control, so it stays bound to
+    // loopback. Setting a token is what opens it to the rest of the network.
+    bindHost: dashboardToken ? '0.0.0.0' : '127.0.0.1',
   };
 
   if (cfg.buyAmountSol > cfg.maxSolPerTrade) {

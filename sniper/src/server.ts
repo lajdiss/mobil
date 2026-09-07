@@ -1,4 +1,5 @@
 import { createServer } from 'node:http';
+import { timingSafeEqual } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import express from 'express';
@@ -27,10 +28,39 @@ export interface ServerHooks {
   panicSell: () => Promise<void>;
 }
 
-export function startServer(port: number, hooks: ServerHooks) {
+export interface ServerOptions {
+  port: number;
+  host: string;
+  token: string;
+}
+
+/** Length-safe comparison so a wrong token cannot be guessed byte by byte. */
+function tokenMatches(expected: string, received: unknown): boolean {
+  if (typeof received !== 'string') return false;
+  const a = Buffer.from(expected);
+  const b = Buffer.from(received);
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
+}
+
+export function startServer(options: ServerOptions, hooks: ServerHooks) {
+  const { port, host, token } = options;
   const app = express();
   app.use(express.json());
+
+  // The page itself carries no data, so it loads freely; everything that reads state
+  // or moves money goes through the token.
   app.use(express.static(join(here, 'public')));
+
+  app.use('/api', (req, res, next) => {
+    if (!token) return next();
+    const provided = req.get('x-dashboard-token') ?? req.query.token;
+    if (!tokenMatches(token, provided)) {
+      res.status(401).json({ error: 'invalid or missing dashboard token' });
+      return;
+    }
+    next();
+  });
 
   app.get('/api/state', (_req, res) => {
     res.json(hooks.getState());
@@ -74,7 +104,14 @@ export function startServer(port: number, hooks: ServerHooks) {
   const server = createServer(app);
   const wss = new WebSocketServer({ server });
 
-  wss.on('connection', (socket) => {
+  wss.on('connection', (socket, request) => {
+    if (token) {
+      const provided = new URL(request.url ?? '/', 'http://localhost').searchParams.get('token');
+      if (!tokenMatches(token, provided)) {
+        socket.close(4001, 'invalid dashboard token');
+        return;
+      }
+    }
     socket.send(JSON.stringify({ type: 'state', payload: hooks.getState() }));
   });
 
@@ -92,8 +129,15 @@ export function startServer(port: number, hooks: ServerHooks) {
   }, 1000);
 
   server.on('close', () => clearInterval(interval));
-  server.listen(port, () => {
-    console.log(`\n  dashboard: http://localhost:${port}\n`);
+  server.listen(port, host, () => {
+    if (token) {
+      console.log(`\n  dashboard: http://localhost:${port}/?token=${token}`);
+      console.log('  reachable on your network — open the same URL on your phone,');
+      console.log('  swapping localhost for this machine\'s LAN IP.\n');
+    } else {
+      console.log(`\n  dashboard: http://localhost:${port}`);
+      console.log('  (localhost only — set DASHBOARD_TOKEN in .env to reach it from your phone)\n');
+    }
   });
 
   return { broadcast };

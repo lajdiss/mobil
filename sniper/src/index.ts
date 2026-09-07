@@ -208,7 +208,7 @@ const EDITABLE_NUMERIC = new Set([
   'dailySpendCapSol',
 ]);
 
-startServer(config.port, {
+startServer({ port: config.port, host: config.bindHost, token: config.dashboardToken }, {
   getState,
   setArmed: (value) => {
     armed = value;

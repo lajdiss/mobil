@@ -65,6 +65,38 @@ Dashboard běží na `http://localhost:8787`.
 Bot startuje **odzbrojený**. Sniping začne až po stisku **ARM**. `PANIC SELL`
 okamžitě odzbrojí bota a prodá všechny otevřené pozice.
 
+## Otevření na telefonu
+
+Dashboard je responzivní, ale bot musí běžet na počítači — telefon je jen okno
+do něj přes Wi-Fi. Ve výchozím stavu poslouchá **jen na localhost**, protože
+nemá žádné přihlášení a kdokoliv na stejné síti by mohl zapnout bota nebo ti
+odprodat pozice.
+
+Vpustit ho do sítě znamená nastavit token:
+
+```bash
+node -e "console.log(require('crypto').randomBytes(24).toString('hex'))"
+```
+
+Vlož ho do `.env` jako `DASHBOARD_TOKEN=` a bota restartuj. Při startu vypíše
+hotovou adresu i s tokenem. Na telefonu (na stejné Wi-Fi) otevři tutéž adresu,
+jen `localhost` nahraď lokální IP počítače:
+
+```
+http://192.168.1.42:8787/?token=<tvůj-token>
+```
+
+IP zjistíš přes `ip addr` (Linux), `ipconfig` (Windows) nebo `ifconfig | grep inet`
+(macOS). Token se uloží do prohlížeče, takže ho zadáváš jen jednou.
+
+Dvě věci k tomu:
+
+- Bez tokenu se bot **odmítne** vystavit do sítě, a token kratší než 16 znaků
+  nespustí vůbec.
+- Je to HTTP na lokální síti, ne HTTPS. Na domácí Wi-Fi v pohodě —
+  **neprostrkávej to port forwardingem na veřejný internet.** Když k tomu
+  potřebuješ přístup zvenku, použij VPN nebo Tailscale.
+
 ## Dry run vs. živé obchodování
 
 Ve výchozím stavu je `DRY_RUN=true` — bot všechno detekuje, vyhodnotí a loguje,
