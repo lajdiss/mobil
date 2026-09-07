@@ -95,6 +95,10 @@
   .verdict.bad { background: rgba(248,81,73,.1); color: var(--red); border-left-color: var(--red); }
   .perf .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px 12px; margin-top: 12px; }
   .perf .grid b { font-size: 14px; }
+  .slip { margin-top: 12px; padding-top: 11px; border-top: 1px solid var(--line); }
+  .slip-row { display: flex; gap: 16px; margin-top: 4px; font-size: 13px; color: var(--dim); }
+  .slip-row b { color: var(--red); }
+  .slip-note { margin-top: 6px; font-size: 11px; color: var(--dim); line-height: 1.45; }
 </style>
 </head>
 <body>
@@ -164,6 +168,14 @@
           <div><span class="lbl">prům. ztráta</span><b class="neg" id="pAvgLoss">—</b></div>
           <div><span class="lbl">nejlepší</span><b class="pos" id="pBest">—</b></div>
           <div><span class="lbl">nejhorší</span><b class="neg" id="pWorst">—</b></div>
+        </div>
+        <div class="slip" id="slipBox" hidden>
+          <div class="lbl">prokluz stop-lossu</div>
+          <div class="slip-row">
+            <span>průměrně <b id="pSlipAvg">—</b></span>
+            <span>nejhůř <b id="pSlipWorst">—</b></span>
+          </div>
+          <div class="slip-note" id="slipNote"></div>
         </div>
       </div>
     </section>
@@ -254,7 +266,10 @@ function render(s) {
       <td class="col-opt">${fmt(p.entrySol)}</td>
       <td class="col-opt">${fmt(p.currentSol)}</td>
       <td class="${cls}">${p.pnlPct >= 0 ? '+' : ''}${fmt(p.pnlPct, 1)}%</td>
-      <td>${esc(p.status)}${p.exitReason ? '<br><span class="mint">' + esc(p.exitReason) + '</span>' : ''}</td>
+      <td>${esc(p.status)}${p.exitReason ? '<br><span class="mint">' + esc(p.exitReason) +
+        (p.overshootPct !== undefined && p.overshootPct < -1
+          ? ' <span class="neg">prokluz ' + fmt(p.overshootPct, 0) + '%</span>'
+          : '') + '</span>' : ''}</td>
       <td>${canClose ? `<button data-close="${esc(p.mint)}">Prodat</button>` : ''}</td>
     </tr>`;
   }).join('');
@@ -280,6 +295,19 @@ function renderPerformance(p) {
   $('pAvgLoss').textContent = pct(p.avgLossPct);
   $('pBest').textContent = pct(p.bestPct);
   $('pWorst').textContent = pct(p.worstPct);
+
+  const slipBox = $('slipBox');
+  if (p.stopLossExits > 0 && p.avgOvershootPct !== null) {
+    slipBox.hidden = false;
+    $('pSlipAvg').textContent = fmt(p.avgOvershootPct, 1) + '%';
+    $('pSlipWorst').textContent = fmt(p.worstOvershootPct, 1) + '%';
+    $('slipNote').textContent =
+      p.gapExits > 0
+        ? `${p.gapExits} z ${p.stopLossExits} stop-lossů cena přeskočila — do prodeje se propadla rovnou pod hranici. Proti tomu stop-loss nepomůže.`
+        : `Všech ${p.stopLossExits} stop-lossů zaskočilo blízko hranice.`;
+  } else {
+    slipBox.hidden = true;
+  }
 
   const net = $('pNet');
   net.textContent = p.closed ? (p.netSol >= 0 ? '+' : '') + fmt(p.netSol) + ' SOL' : '—';

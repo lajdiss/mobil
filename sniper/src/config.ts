@@ -58,6 +58,7 @@ export interface Config {
   blockedNamePatterns: string[];
   maxCreatorLaunchesPerHour: number;
   port: number;
+  exitPollMs: number;
   dashboardToken: string;
   bindHost: string;
 }
@@ -98,6 +99,8 @@ export function loadConfig(): Config {
       .filter(Boolean),
     maxCreatorLaunchesPerHour: num('MAX_CREATOR_LAUNCHES_PER_HOUR', 1),
     port: num('PORT', 8787),
+    // Backstop for the account stream; a position nobody is watching has no stop-loss.
+    exitPollMs: Math.max(500, num('EXIT_POLL_MS', 2000)),
     dashboardToken,
     // Without a token the dashboard has no access control, so it stays bound to
     // loopback. Setting a token is what opens it to the rest of the network.

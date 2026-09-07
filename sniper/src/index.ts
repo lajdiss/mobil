@@ -263,7 +263,9 @@ async function main() {
   log(`started in ${config.dryRun ? 'dry-run' : 'live'} mode — press ARM in the dashboard to begin`);
 
   detector.start();
+  positions.startExitPolling(config.exitPollMs);
   setInterval(() => void refreshBalance(), 30_000);
+  setInterval(() => void executor.refreshBlockhash(), 10_000);
 }
 
 const shutdown = async () => {

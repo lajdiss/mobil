@@ -158,6 +158,20 @@ přepočítává podle toho, co máš zrovna nastavené, takže hned vidíš, je
 Panel drží jazyk za zuby, dokud nemá aspoň 20 uzavřených obchodů — pod tím
 je jakékoliv procento jen šum.
 
+### Prokluz stop-lossu
+
+Panel zvlášť měří, **o kolik pod nastavenou hranicí** prodej reálně skončil.
+Rozlišuje dvě věci, které se snadno pletou:
+
+- **Malý prokluz** = bot zareagoval pozdě. To je řešitelné rychlejší infrou.
+- **Velký prokluz (přes 5 bodů)** = cena hranici *přeskočila*. Rug proběhne
+  v jediné transakci, kdy křivka spadne z nuly rovnou na −60 %. Cena se přes
+  −30 % nikdy neobchodovala, takže se tam nebylo čeho chytit.
+
+Tohle rozlišení je důležité, protože druhý případ **žádným nastavením stop-lossu
+nevyřešíš.** Když panel hlásí hodně gapů, problém není v konfiguraci — je v tom,
+co kupuješ. Řešením jsou přísnější filtry nebo menší pozice, ne nižší stop-loss.
+
 Bot nic nepredikuje. Nemá názor na to, který token poroste; kupuje, co projde
 filtry, a mechanicky uřízne pozici podle pravidel. Úspěšnost je tedy vlastnost
 tvého nastavení a tržních podmínek, ne inteligence bota.

@@ -61,6 +61,53 @@ export class Executor {
     return info ? decodeBondingCurve(info.data) : null;
   }
 
+  /** One request for every open position, so polling stays cheap on a free RPC. */
+  async getBondingCurves(mints: PublicKey[]): Promise<Map<string, BondingCurve>> {
+    const out = new Map<string, BondingCurve>();
+    if (mints.length === 0) return out;
+
+    for (let i = 0; i < mints.length; i += 100) {
+      const batch = mints.slice(i, i + 100);
+      const infos = await this.connection.getMultipleAccountsInfo(
+        batch.map(bondingCurvePda),
+        'processed',
+      );
+      infos.forEach((info, index) => {
+        if (!info) return;
+        try {
+          out.set(batch[index].toBase58(), decodeBondingCurve(info.data));
+        } catch {
+          // A malformed account is not worth aborting the whole poll for.
+        }
+      });
+    }
+    return out;
+  }
+
+  /**
+   * Kept warm in the background: fetching a blockhash on the exit path adds a round
+   * trip at the exact moment latency costs the most.
+   */
+  private cachedBlockhash: { blockhash: string; lastValidBlockHeight: number; at: number } | null =
+    null;
+
+  private async getBlockhash() {
+    const cached = this.cachedBlockhash;
+    if (cached && Date.now() - cached.at < 15_000) return cached;
+    const fresh = await this.connection.getLatestBlockhash('confirmed');
+    this.cachedBlockhash = { ...fresh, at: Date.now() };
+    return this.cachedBlockhash;
+  }
+
+  async refreshBlockhash() {
+    try {
+      const fresh = await this.connection.getLatestBlockhash('confirmed');
+      this.cachedBlockhash = { ...fresh, at: Date.now() };
+    } catch {
+      // Keep the old one; getBlockhash falls back to fetching on demand.
+    }
+  }
+
   private tradeParams(
     mint: PublicKey,
     creator: PublicKey,
@@ -115,7 +162,7 @@ export class Executor {
     instructions: ReturnType<typeof buildBuyInstruction>[],
     label: string,
   ): Promise<TradeResult> {
-    const { blockhash, lastValidBlockHeight } = await this.connection.getLatestBlockhash('confirmed');
+    const { blockhash, lastValidBlockHeight } = await this.getBlockhash();
     const message = new TransactionMessage({
       payerKey: this.wallet.publicKey,
       recentBlockhash: blockhash,
@@ -204,8 +251,11 @@ export class Executor {
     creator: PublicKey,
     tokenProgram: PublicKey,
     tokenAmount: bigint,
+    knownCurve?: BondingCurve,
   ): Promise<{ result: TradeResult | null; solOut: number; rentReclaimed: boolean }> {
-    const curve = await this.getBondingCurve(mint);
+    // The caller usually just read this curve to decide to exit; re-fetching it would
+    // add a round trip to the most latency-sensitive path in the bot.
+    const curve = knownCurve ?? (await this.getBondingCurve(mint));
     if (!curve) throw new Error('bonding curve not found');
 
     if (this.config.dryRun) {
