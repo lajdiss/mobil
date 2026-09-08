@@ -62,9 +62,13 @@ export function evaluate(
     };
   }
 
-  if (token.isMayhemMode) {
-    return { passed: false, reason: 'mayhem mode token' };
-  }
+  // Mayhem mode is NOT rejected, though it was for most of this bot's life. The flag
+  // was treated as unsupported without ever being tested, and it was throwing away 38%
+  // of every launch on the platform — 34 of 90 recent curves carried it. Simulating a
+  // buy and a sell against three live mayhem tokens with the ordinary instruction
+  // layout succeeded on all three; nothing about them needs different accounts.
+  //
+  // The cashback flag below is a different matter and is real.
 
   // pump.fun allows curves quoted in something other than SOL, and every price in this
   // bot — the entry quote, the stop-loss, the exit — divides by the quote reserves.
@@ -87,7 +91,9 @@ export function evaluate(
 
   // Selling a cashback coin fails with InvalidCashbackAccumulator (6073) — the sell
   // wants an accumulator account the plain instruction does not carry. Buying one
-  // would mean a position stop-loss cannot exit, so skip them entirely.
+  // would mean a position stop-loss cannot exit, so skip them entirely. Re-confirmed
+  // against three live cashback tokens: all three simulate a clean buy and fail on
+  // the sell, which is the worst shape a position can have.
   if (token.isCashbackEnabled) {
     return { passed: false, reason: 'cashback token (cannot be sold by this bot)' };
   }

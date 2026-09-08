@@ -271,7 +271,6 @@ export class Executor {
       if (onChain.complete) throw new Error('bonding curve already complete (migrated)');
       // Last line of defence: selling these fails, never take a position we cannot exit.
       if (onChain.isCashbackCoin) throw new Error('cashback coin — this bot cannot sell it');
-      if (onChain.isMayhemMode) throw new Error('mayhem mode coin — not supported');
       curve = onChain;
     }
 
@@ -501,7 +500,10 @@ export class Executor {
     solAmount: number,
   ): Promise<{ result: TradeResult | null; tokenAmount: bigint; solSpent: number }> {
     if (pool.isCashbackCoin) throw new Error('cashback coin — this bot cannot sell it');
-    if (pool.isMayhemMode) throw new Error('mayhem mode coin — not supported');
+    // The AMM equivalent of the mayhem guard stays until it is tested the way the
+    // curve one was. Mayhem trades fine on the bonding curve — verified against live
+    // tokens — but that says nothing about the pool it graduates into.
+    if (pool.isMayhemMode) throw new Error('mayhem mode pool — not yet verified on the AMM');
 
     const solIn = solToLamports(solAmount);
     const tokens = tokensForSol(quote, solIn);

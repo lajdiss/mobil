@@ -75,7 +75,10 @@ const cases: Case[] = [
     token: normalLaunch({ virtualQuoteReserves: 0n, virtualSolReserves: 0n }),
     shouldPass: false,
   },
-  { name: 'mayhem mode', token: normalLaunch({ isMayhemMode: true }), shouldPass: false },
+  // Mayhem was rejected for most of this bot's life without ever being tested, and it
+  // is 38% of launches. Three live mayhem tokens simulate a clean buy and sell with
+  // the ordinary instruction layout, so it must pass.
+  { name: 'mayhem mode (trades fine, must pass)', token: normalLaunch({ isMayhemMode: true }), shouldPass: true },
   {
     name: 'cashback token (cannot be sold)',
     token: normalLaunch({ isCashbackEnabled: true }),
