@@ -25,6 +25,18 @@ const median = (xs: number[]) => {
 
 function evaluate(paths: RecordedPath[], rule: ExitRule) {
   const outcomes = paths.map((p) => simulate(p, rule));
+  if (process.env.REPLAY_REASONS === rule.label) {
+    const by: Record<string, { n: number; sum: number }> = {};
+    for (const o of outcomes) {
+      const e = (by[o.reason] ??= { n: 0, sum: 0 });
+      e.n++;
+      e.sum += o.pct;
+    }
+    console.log(`  [reasons for ${rule.label}]`);
+    for (const [k, v] of Object.entries(by).sort((a, b) => b[1].n - a[1].n)) {
+      console.log(`    ${k.padEnd(14)} n=${String(v.n).padStart(3)}  mean ${(v.sum / v.n).toFixed(2)}%`);
+    }
+  }
   if (process.env.REPLAY_DEBUG === rule.label) {
     outcomes.forEach((o, i) =>
       console.log(`  [debug] ${paths[i].symbol}: ${o.pct.toFixed(2)}% via ${o.reason} at ${o.heldSeconds}s`),
@@ -80,7 +92,11 @@ function buildGrid(): ExitRule[] {
   const rules: ExitRule[] = [
     rule('buy and hold (no exit)', { takeProfitPct: 1e6, stopLossPct: 99.9, maxHoldSeconds: 1e6 }),
   ];
-  for (const tp of [15, 30, 50, 100, 200]) {
+  // The lower end is deliberately below where the previous sweep bottomed out. TP15
+  // won that grid while sitting on its own edge, which usually means the optimum is
+  // outside it. The floor is the round trip's fees — roughly 2% on the curve — so a
+  // target under that cannot clear costs however often it is hit.
+  for (const tp of [4, 6, 8, 10, 15, 30, 50, 100, 200]) {
     for (const sl of [10, 20, 30, 50]) {
       rules.push(rule(`TP${tp} / SL${sl}`, { takeProfitPct: tp, stopLossPct: sl }));
     }
@@ -107,8 +123,20 @@ function buildGrid(): ExitRule[] {
       }),
     );
   }
-  for (const hold of [60, 120, 600]) {
+  // Short holds are in because 39% of recorded tokens peaked within five seconds of
+  // the entry: if the move is already over, sitting through it is the loss.
+  for (const hold of [10, 20, 30, 60, 120, 600]) {
     rules.push(rule(`hold ${hold}s`, { maxHoldSeconds: hold }));
+  }
+  // The same idea combined with a tight target.
+  for (const hold of [15, 30, 60]) {
+    rules.push(
+      rule(`TP8 / SL15, hold ${hold}s`, {
+        takeProfitPct: 8,
+        stopLossPct: 15,
+        maxHoldSeconds: hold,
+      }),
+    );
   }
   return rules;
 }
@@ -118,6 +146,7 @@ const file = args.find((a) => !a.startsWith('--')) ?? 'data/paths.jsonl';
 // Ranking by win rate answers "which rule wins most often"; ranking by expectancy
 // answers "which rule makes money". They are rarely the same rule, which is the point.
 const sortBy = args.includes('--sort=wr') ? 'wr' : 'exp';
+const sweepLatency = args.includes('--latency');
 const paths: RecordedPath[] = readFileSync(file, 'utf8')
   .split('\n')
   .filter(Boolean)
@@ -138,6 +167,46 @@ console.log(
   'A rule needing longer than a path was recorded for cannot be judged from it — ' +
     'those show as path-ended.\n',
 );
+
+/**
+ * How much the exit's own latency costs.
+ *
+ * The replay used to fill at the sample that triggered the exit, and a 10% target was
+ * booking its take-profits at an average of +27% — the price gaps past the threshold
+ * between samples and the fill was taken at the top of the gap. Real exits land a
+ * second or two after the rule fires, and this measures what that second is worth.
+ *
+ * It is the most decision-relevant number the replay produces, because unlike a
+ * parameter it cannot be tuned: buying lower latency costs money.
+ */
+if (sweepLatency) {
+  console.log('COST OF EXIT LATENCY — best rule at each delay, same paths\n');
+  console.log(
+    'delay'.padStart(7) + 'best rule'.padStart(22) + 'win%'.padStart(8) +
+      'exp%'.padStart(9) + 'exp-3'.padStart(9) + '  top3',
+  );
+  console.log('-'.repeat(60));
+  for (const delay of [0, 0.5, 1, 1.5, 2, 3, 5]) {
+    const scored = buildGrid()
+      .map((r) => evaluate(paths, { ...r, executionDelaySeconds: delay }))
+      .sort((a, b) => b.expectancy - a.expectancy);
+    const best = scored[0];
+    console.log(
+      `${delay}s`.padStart(7) +
+        best.rule.label.padStart(22) +
+        best.winRate.toFixed(1).padStart(8) +
+        best.expectancy.toFixed(2).padStart(9) +
+        (best.expectancyMinusTop3 ?? 0).toFixed(2).padStart(9) +
+        (best.top3Share === null ? '     —' : best.top3Share.toFixed(0).padStart(5) + '%'),
+    );
+  }
+  console.log(
+    '\nEvery rule sees identical paths; only the moment the sale prices moves. A\n' +
+      'strategy that is profitable at 0s and loses at 3s does not have an edge in its\n' +
+      'rule — it has one in its infrastructure, and that one has a price.',
+  );
+  process.exit(0);
+}
 
 const results = buildGrid()
   .map((r) => evaluate(paths, r))
