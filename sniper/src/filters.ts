@@ -1,5 +1,6 @@
 import type { Config } from './config.js';
 import type { DetectedToken } from './detector.js';
+import { PublicKey } from '@solana/web3.js';
 import { WSOL_MINT } from './pumpswap.js';
 
 export interface FilterVerdict {
@@ -65,13 +66,19 @@ export function evaluate(
     return { passed: false, reason: 'mayhem mode token' };
   }
 
-  // pump.fun allows curves quoted in something other than SOL. Every price in this
-  // bot — the entry quote, the stop-loss, the exit — divides by the quote reserves,
-  // and for those tokens the SOL-denominated reserves are zero. Found in recorded
-  // data: one launch produced a NaN profit rather than an error, which is the worst
-  // possible failure because nothing raises. Reject rather than mispricing them.
-  if (!token.quoteMint.equals(WSOL_MINT)) {
-    return { passed: false, reason: 'curve is not quoted in SOL' };
+  // pump.fun allows curves quoted in something other than SOL, and every price in this
+  // bot — the entry quote, the stop-loss, the exit — divides by the quote reserves.
+  // For those tokens the SOL-denominated reserves are zero, and one recorded launch
+  // produced a NaN profit rather than an error, which is the worst kind of failure
+  // because nothing raises.
+  //
+  // The identity check is on the reserves, not on the mint. A curve quoted in native
+  // SOL leaves quoteMint unset — it arrives as the all-zero pubkey, not as WSOL — so
+  // requiring WSOL here rejected every launch on the platform. Measured: 57 of 57.
+  const nativeSol =
+    token.quoteMint.equals(PublicKey.default) || token.quoteMint.equals(WSOL_MINT);
+  if (!nativeSol) {
+    return { passed: false, reason: `curve is quoted in ${token.quoteMint.toBase58().slice(0, 8)}` };
   }
   const quoteReserves = token.virtualQuoteReserves || token.virtualSolReserves;
   if (quoteReserves <= 0n) {
