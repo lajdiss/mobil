@@ -13,6 +13,7 @@ import { ConsensusTracker } from './consensus.js';
 import { MomentumTracker } from './momentum.js';
 import { LaunchRecorder } from './launches.js';
 import { PathRecorder } from './recorder.js';
+import { routeForMode } from './routing.js';
 import { EntryQueue } from './selection.js';
 import { PositionManager, type Position } from './positions.js';
 import { Metrics } from './metrics.js';
@@ -308,20 +309,34 @@ async function handleToken(token: DetectedToken) {
 
   stats.passed++;
 
-  // Neither of these enters at launch — the token has to earn it first.
-  if (config.entryMode === 'momentum') {
-    momentum.register(token);
-    return;
+  // Routed from a table, so a mode can never silently do nothing: every mode has an
+  // entry there and the switch has no default to fall through.
+  switch (routeForMode(config.entryMode)) {
+    case 'momentum-tracker':
+      momentum.register(token);
+      return;
+    case 'copy-tracker':
+      rememberToken(token);
+      return;
+    case 'consensus-tracker':
+      consensus.register(token);
+      return;
+    case 'enter-after-delay':
+      delayed.add(mintKey);
+      setTimeout(() => {
+        delayed.delete(mintKey);
+        // With a selection window the token joins a pool and competes on activity;
+        // without one it enters straight away, which is first-come, not best.
+        if (config.selectionWindowSeconds > 0) entryQueue.add(mintKey, token);
+        else void enterPosition(token);
+      }, config.delaySeconds * 1000).unref();
+      return;
+    case 'ignore':
+      return;
+    case 'enter-now':
+      await enterPosition(token);
+      return;
   }
-  if (config.entryMode === 'copy') {
-    rememberToken(token);
-    return;
-  }
-  if (config.entryMode === 'consensus') {
-    consensus.register(token);
-    return;
-  }
-  await enterPosition(token);
 }
 
 async function enterPosition(token: DetectedToken) {

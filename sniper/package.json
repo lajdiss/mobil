@@ -11,6 +11,8 @@
     "test:filters": "tsx src/selftest-filters.ts",
     "test:crowd": "tsx src/selftest-crowd.ts",
     "test:selection": "tsx src/selftest-selection.ts",
+    "test:routing": "tsx src/selftest-routing.ts",
+    "test": "npm run -s test:filters && npm run -s test:exits && npm run -s test:crowd && npm run -s test:selection && npm run -s test:routing",
     "replay": "tsx src/replay.ts",
     "replay:entry": "tsx src/replay-entry.ts",
     "replay:split": "tsx src/replay-split.ts",
