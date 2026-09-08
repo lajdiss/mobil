@@ -267,6 +267,23 @@ poloviny podle času dalo 9,3 % úspěšnosti v jedné a 53,5 % v druhé, a **ž
 pravidlo nedrželo v obou**. Když ti vyjde hezké číslo na malém vzorku, skoro
 jistě jsi změřil trh, ne své nastavení.
 
+### Když ti vyjde nízká úspěšnost
+
+Než začneš ladit, zkontroluj v `.env` tohle — starší kopie repa měly jako výchozí
+právě tu nejhůř měřenou kombinaci:
+
+```
+ENTRY_MODE=delay            # ne snipe: snipe je závod o latenci, který prohraješ
+MIN_TRADES_BEFORE_ENTRY=12  # nekupovat tokeny, se kterými nikdo neobchoduje
+TAKE_PROFIT_PCT=10          # ne 50
+STOP_LOSS_PCT=50            # ne 30
+```
+
+A hlavně: **úspěšnost sama o sobě neříká, jestli proděláváš.** Při TP 10 / SL 50
+je 30 % výher normální stav, protože ztráty jsou malé a časté a výhry velké.
+Při TP 50 / SL 30 potřebuješ 40 % jen na nulu. V dashboardu se dívej na
+**expectancy** a **čistý PnL**, ne na procento.
+
 ### Čemu nevěřit
 
 Sloupec `exp-3` je expectancy po odebrání tří nejlepších obchodů a `top3` říká,
