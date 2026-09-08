@@ -69,7 +69,7 @@ export interface Config {
   blockedNamePatterns: string[];
   maxCreatorLaunchesPerHour: number;
   maxDevBuyPct: number;
-  entryMode: 'snipe' | 'momentum' | 'copy' | 'delay' | 'graduate';
+  entryMode: 'snipe' | 'momentum' | 'copy' | 'delay' | 'graduate' | 'consensus';
   momentumMinLiquiditySol: number;
   momentumMinBuys: number;
   momentumMaxAgeSeconds: number;
@@ -81,6 +81,9 @@ export interface Config {
   graduateMinBuyRatio: number;
   delaySeconds: number;
   delayMinLiquiditySol: number;
+  consensusMinWallets: number;
+  consensusWindowSeconds: number;
+  consensusMaxAgeSeconds: number;
   learningEnabled: boolean;
   learningMinTrades: number;
   learningMinScore: number;
@@ -168,9 +171,8 @@ export function loadConfig(): Config {
     // and trades the AMM pool a token lands in after it graduates.
     entryMode: ((): Config['entryMode'] => {
       const mode = process.env.ENTRY_MODE || 'snipe';
-      return mode === 'momentum' || mode === 'copy' || mode === 'delay' || mode === 'graduate'
-        ? mode
-        : 'snipe';
+      const known = ['momentum', 'copy', 'delay', 'graduate', 'consensus'] as const;
+      return (known as readonly string[]).includes(mode) ? (mode as Config['entryMode']) : 'snipe';
     })(),
     momentumMinLiquiditySol: num('MOMENTUM_MIN_LIQUIDITY_SOL', 5),
     momentumMinBuys: num('MOMENTUM_MIN_BUYS', 8),
@@ -193,6 +195,12 @@ export function loadConfig(): Config {
     // Off by default on purpose: a liquidity floor would quietly turn this into
     // momentum mode and stop it measuring the delay on its own.
     delayMinLiquiditySol: num('DELAY_MIN_LIQUIDITY_SOL', 0),
+    // Copy mode follows the first proven wallet and measured out as noise twice over.
+    // This asks for agreement instead: several wallets with a record, buying the same
+    // token close together. Three is the smallest number that is not a coincidence.
+    consensusMinWallets: Math.max(2, num('CONSENSUS_MIN_WALLETS', 3)),
+    consensusWindowSeconds: num('CONSENSUS_WINDOW_SECONDS', 45),
+    consensusMaxAgeSeconds: num('CONSENSUS_MAX_AGE_SECONDS', 300),
     // Learning records outcomes from the first trade, but only starts rejecting
     // candidates once there is enough history for a score to mean anything.
     learningEnabled: bool('LEARNING_ENABLED', true),

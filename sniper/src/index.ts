@@ -5,6 +5,7 @@ import { Executor } from './executor.js';
 import { GraduateWatcher, type GraduateCandidate } from './graduates.js';
 import { CreatorHistory, evaluate } from './filters.js';
 import { KeywordMemory } from './learning.js';
+import { ConsensusTracker } from './consensus.js';
 import { MomentumTracker } from './momentum.js';
 import { PositionManager, type Position } from './positions.js';
 import { Metrics } from './metrics.js';
@@ -156,6 +157,21 @@ const momentum = new MomentumTracker(
   },
 );
 
+const consensus = new ConsensusTracker(
+  {
+    minWallets: config.consensusMinWallets,
+    windowSeconds: config.consensusWindowSeconds,
+    maxAgeSeconds: config.consensusMaxAgeSeconds,
+  },
+  (token, wallets) => {
+    log(
+      `${token.symbol}: ${wallets.length} proven wallets bought within ` +
+        `${config.consensusWindowSeconds}s — following`,
+    );
+    void enterPosition(token);
+  },
+);
+
 async function handleToken(token: DetectedToken) {
   // Graduate mode watches the curve only to learn which tokens have filled it; the
   // launches themselves are never candidates, so counting them here would report
@@ -208,6 +224,10 @@ async function handleToken(token: DetectedToken) {
   }
   if (config.entryMode === 'copy') {
     rememberToken(token);
+    return;
+  }
+  if (config.entryMode === 'consensus') {
+    consensus.register(token);
     return;
   }
   await enterPosition(token);
@@ -482,6 +502,21 @@ const detector = new Detector(
     if (config.entryMode === 'graduate' && trade.realTokenReserves === 0n) {
       graduates.noteCurveComplete(trade.mint);
     }
+    if (config.entryMode === 'consensus') {
+      wallets.record(trade);
+      if (
+        trade.isBuy &&
+        !positions.has(trade.mint.toBase58()) &&
+        wallets.isProven(
+          trade.user.toBase58(),
+          config.copyMinClosed,
+          config.copyMinRealisedSol,
+          config.copyMinWinRate,
+        )
+      ) {
+        consensus.recordProvenBuy(trade);
+      }
+    }
     if (config.entryMode === 'copy') {
       wallets.record(trade);
       // Follow a buy only from a wallet with a record, and only into a launch we saw.
@@ -555,6 +590,7 @@ const getState = (): DashboardState => ({
   stream: detector.health(),
   graduates: config.entryMode === 'graduate' ? graduates.health() : null,
   pendingEntries: delayed.size,
+  consensus: config.entryMode === 'consensus' ? consensus.health() : null,
 });
 
 const EDITABLE_NUMERIC = new Set([
@@ -613,6 +649,9 @@ async function main() {
     copy: `copy (follow wallets with ${config.copyMinRealisedSol}+ SOL over ${config.copyMinClosed}+ trades)`,
     snipe: 'snipe (buy at launch)',
     delay: `delay (buy every qualifying launch ${config.delaySeconds}s after it happens)`,
+    consensus:
+      `consensus (enter when ${config.consensusMinWallets} proven wallets buy the same ` +
+      `token within ${config.consensusWindowSeconds}s)`,
     graduate:
       `graduate (AMM pools ${config.graduateMinAgeSeconds}s+ past graduation with ` +
       `${config.graduateMinLiquiditySol}+ SOL and ${config.graduateMinBuys}+ buys)`,
@@ -635,7 +674,9 @@ async function main() {
   positions.startExitPolling(config.exitPollMs);
   setInterval(() => void refreshBalance(), 30_000);
   setInterval(() => void executor.refreshBlockhash(), 10_000);
-  if (config.entryMode === 'copy') setInterval(() => wallets.save(), 60_000);
+  if (config.entryMode === 'copy' || config.entryMode === 'consensus') {
+    setInterval(() => wallets.save(), 60_000);
+  }
 }
 
 const shutdown = async () => {

@@ -27,6 +27,8 @@ export interface DashboardState {
   graduates: unknown;
   /** Launches counting down to a delayed entry. */
   pendingEntries: number;
+  /** Present only in consensus mode: how much agreement has been seen. */
+  consensus: unknown;
   stream: {
     alive: boolean;
     silentMs: number | null;
