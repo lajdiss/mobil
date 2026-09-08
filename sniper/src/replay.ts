@@ -118,6 +118,11 @@ const median = (xs: number[]) => {
 
 function evaluate(paths: RecordedPath[], rule: ExitRule) {
   const outcomes = paths.map((p) => simulate(p, rule));
+  if (process.env.REPLAY_DEBUG === rule.label) {
+    outcomes.forEach((o, i) =>
+      console.log(`  [debug] ${paths[i].symbol}: ${o.pct.toFixed(2)}% via ${o.reason} at ${o.heldSeconds}s`),
+    );
+  }
   const wins = outcomes.filter((o) => o.pct > 0).length;
   const pcts = outcomes.map((o) => o.pct);
   const expectancy = pcts.reduce((a, b) => a + b, 0) / pcts.length;
