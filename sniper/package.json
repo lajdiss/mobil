@@ -7,6 +7,7 @@
     "start": "tsx src/index.ts",
     "verify": "tsx src/verify.ts",
     "verify:amm": "tsx src/verify-swap.ts",
+    "test:exits": "tsx src/selftest-exits.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

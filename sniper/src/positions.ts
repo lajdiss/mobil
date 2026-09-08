@@ -5,7 +5,14 @@ import { solForTokens, type CurveQuote, type TradeUpdate } from './pump.js';
 import { poolQuote, type SwapPool, type SwapTrade } from './pumpswap.js';
 
 export type PositionStatus = 'open' | 'closing' | 'closed' | 'failed';
-export type ExitReason = 'take-profit' | 'stop-loss' | 'trailing-stop' | 'timeout' | 'manual';
+export type ExitReason =
+  | 'take-profit'
+  | 'stop-loss'
+  | 'trailing-stop'
+  | 'timeout'
+  | 'manual'
+  | 'break-even'
+  | 'dev-sold';
 
 /** Which market the position lives in — the bonding curve, or the AMM after it. */
 export type Venue = 'pump' | 'pumpswap';
@@ -18,6 +25,13 @@ export interface Position {
   creator: string;
   tokenProgram: string;
   tokenAmount: bigint;
+  /** What was bought, before any scale-out reduced the holding. */
+  initialTokenAmount: bigint;
+  /** SOL already banked from partial sells; part of every value the position reports. */
+  realisedSol: number;
+  partialsTaken: number;
+  /** Set once a partial is banked: the rest is not allowed to become a loss. */
+  stopAtBreakEven: boolean;
   entrySol: number;
   currentSol: number;
   peakSol: number;
@@ -78,6 +92,11 @@ export interface Performance {
   breakEvenApplies: boolean;
   /** Stop-loss exits, and how far past the threshold they actually landed. */
   stopLossExits: number;
+  /** Exits grouped by what triggered them — reason enough is often the whole story. */
+  byReason: Record<string, { count: number; expectancyPct: number }>;
+  /** How many closed trades banked a partial first, and what that did to the result. */
+  scaledOut: number;
+  scaledOutWinRatePct: number | null;
   avgOvershootPct: number | null;
   worstOvershootPct: number | null;
   /** Stop-losses that gapped straight through the threshold rather than crossing it. */
@@ -152,6 +171,19 @@ export class PositionManager {
     // w·(TP − fee) = (1 − w)·(SL + fee)  ->  w = (SL + fee) / (TP + SL)
     const breakEven = ((stopLossPct + roundTripFeePct) / (takeProfitPct + stopLossPct)) * 100;
 
+    const byReason: Record<string, { count: number; expectancyPct: number }> = {};
+    for (const position of closed) {
+      const reason = position.exitReason ?? 'unknown';
+      const pct =
+        position.entrySol > 0 ? ((position.exitSol - position.entrySol) / position.entrySol) * 100 : 0;
+      const entry = (byReason[reason] ??= { count: 0, expectancyPct: 0 });
+      entry.expectancyPct = (entry.expectancyPct * entry.count + pct) / (entry.count + 1);
+      entry.count++;
+    }
+
+    const scaled = closed.filter((p) => p.partialsTaken > 0);
+    const scaledWins = scaled.filter((p) => p.exitSol > p.entrySol);
+
     return {
       closed: results.length,
       wins: wins.length,
@@ -170,6 +202,9 @@ export class PositionManager {
       // Once a meaningful share exits on a timeout instead, it describes nothing.
       breakEvenApplies: results.length > 0 && thresholdExits / results.length >= 0.7,
       stopLossExits: overshoots.length,
+      byReason,
+      scaledOut: scaled.length,
+      scaledOutWinRatePct: scaled.length ? (scaledWins.length / scaled.length) * 100 : null,
       avgOvershootPct: overshoots.length ? mean(overshoots) : null,
       worstOvershootPct: overshoots.length ? Math.min(...overshoots) : null,
       // More than 5 points past the threshold means the price never traded through it.
@@ -197,7 +232,24 @@ export class PositionManager {
   /** Fed from the shared log stream; most trades are for tokens we do not hold. */
   onTrade(trade: TradeUpdate) {
     const mint = trade.mint.toBase58();
-    if (!this.positions.has(mint)) return;
+    const position = this.positions.get(mint);
+    if (!position) return;
+
+    // The creator selling their own supply is the clearest rug signal available, and
+    // it costs nothing: the seller's wallet is already in the event being used to
+    // price the position. Acted on before the price update, because by the time the
+    // stop-loss sees the damage the exit is worth far less.
+    if (
+      this.config.exitOnCreatorSell &&
+      !trade.isBuy &&
+      position.status === 'open' &&
+      trade.user.toBase58() === position.creator
+    ) {
+      this.onLog(`${position.symbol}: creator is selling — exiting now`);
+      void this.close(mint, 'dev-sold', trade);
+      return;
+    }
+
     this.applyCurve(mint, trade, 'stream');
   }
 
@@ -213,7 +265,11 @@ export class PositionManager {
     const position = this.positions.get(mint);
     if (!position || position.status !== 'open') return;
 
-    position.currentSol = lamportsToSol(solForTokens(curve, position.tokenAmount));
+    // Everything the position is worth: what a sale of the remainder would return,
+    // plus what earlier partials already returned. Without the second term a
+    // scaled-out position reads as though it lost the part it banked.
+    position.currentSol =
+      position.realisedSol + lamportsToSol(solForTokens(curve, position.tokenAmount));
     position.peakSol = Math.max(position.peakSol, position.currentSol);
     position.pnlPct =
       position.entrySol > 0 ? ((position.currentSol - position.entrySol) / position.entrySol) * 100 : 0;
@@ -236,6 +292,11 @@ export class PositionManager {
         (Number(curve.virtualQuoteReserves) / Number(curve.virtualTokenReserves)) * supply;
     }
     this.onChange(position);
+
+    if (this.shouldTakePartial(position)) {
+      void this.takePartial(mint, curve);
+      return;
+    }
 
     const exit = this.checkExit(position);
     if (exit) {
@@ -295,6 +356,9 @@ export class PositionManager {
   private checkExit(position: Position): ExitReason | null {
     if (position.pnlPct >= this.config.takeProfitPct) return 'take-profit';
     if (position.pnlPct <= -this.config.stopLossPct) return 'stop-loss';
+    // A position that has already returned part of its cost should not be allowed to
+    // round-trip into a loss.
+    if (position.stopAtBreakEven && position.pnlPct <= 0) return 'break-even';
 
     if (this.config.trailingStopPct > 0 && position.peakSol > position.entrySol) {
       const dropFromPeak = ((position.peakSol - position.currentSol) / position.peakSol) * 100;
@@ -321,17 +385,23 @@ export class PositionManager {
     try {
       const { result, solOut, rentReclaimed } = await this.sellPosition(position, knownCurve);
       position.status = 'closed';
-      position.exitSol = solOut;
+      // Total returned by the position, partials included, so performance() compares
+      // like with like against entrySol.
+      position.exitSol = solOut + position.realisedSol;
 
       const exitPct =
-        position.entrySol > 0 ? ((solOut - position.entrySol) / position.entrySol) * 100 : 0;
+        position.entrySol > 0
+          ? ((position.exitSol - position.entrySol) / position.entrySol) * 100
+          : 0;
       if (reason === 'stop-loss') {
         // Negative means the exit landed further underwater than the stop-loss allowed.
         position.overshootPct = exitPct + this.config.stopLossPct;
       }
       position.sellSignature = result?.signature;
       this.onLog(
-        `closed ${position.symbol}: ${solOut.toFixed(4)} SOL out vs ${position.entrySol.toFixed(4)} in` +
+        `closed ${position.symbol}: ${position.exitSol.toFixed(4)} SOL out vs ` +
+          `${position.entrySol.toFixed(4)} in` +
+          (position.partialsTaken > 0 ? ` (incl. ${position.realisedSol.toFixed(4)} banked)` : '') +
           (rentReclaimed ? ' (rent reclaimed)' : ''),
       );
     } catch (err) {
@@ -361,11 +431,60 @@ export class PositionManager {
     this.onChange(position);
   }
 
+  private shouldTakePartial(position: Position): boolean {
+    return (
+      this.config.partialTakeProfitPct > 0 &&
+      position.partialsTaken === 0 &&
+      position.status === 'open' &&
+      position.pnlPct >= this.config.partialTakeProfitPct &&
+      // Never below the full target: at that point the whole position is exiting anyway.
+      position.pnlPct < this.config.takeProfitPct
+    );
+  }
+
+  /**
+   * Banks part of the position and lets the rest run.
+   *
+   * This is the one lever that raises win rate without pretending: a trade that touches
+   * the near target and then round-trips is booked as a small win instead of a loss,
+   * and the remainder still carries the tail that pays for everything else. It is not
+   * free — the trades that would have run to the full target now return less — which is
+   * exactly why it is reported next to expectancy rather than on its own.
+   */
+  private async takePartial(mint: string, curve?: CurveQuote) {
+    const position = this.positions.get(mint);
+    if (!position || position.status !== 'open') return;
+
+    const amount = (position.tokenAmount * BigInt(this.config.partialSellPct)) / 100n;
+    if (amount <= 0n) return;
+    // Marked before the await: the stream fires many times a second and would
+    // otherwise start a second partial while this one is still in flight.
+    position.partialsTaken++;
+    this.onChange(position);
+
+    try {
+      const { solOut } = await this.sellPosition(position, curve, amount);
+      position.realisedSol += solOut;
+      position.tokenAmount -= amount;
+      if (this.config.breakEvenAfterPartial) position.stopAtBreakEven = true;
+      this.onLog(
+        `banked ${this.config.partialSellPct}% of ${position.symbol} at ` +
+          `${position.pnlPct.toFixed(1)}% — ${solOut.toFixed(4)} SOL, letting the rest run`,
+      );
+    } catch (err) {
+      // A failed partial leaves the position exactly as it was, so let it try again.
+      position.partialsTaken--;
+      this.onLog(`partial sell failed for ${position.symbol}: ${(err as Error).message}`);
+    }
+    this.onChange(position);
+  }
+
   /**
    * The two venues take different instructions and price from different accounts, so
    * the exit picks by venue rather than assuming the bonding curve.
    */
-  private async sellPosition(position: Position, knownCurve?: CurveQuote) {
+  private async sellPosition(position: Position, knownCurve?: CurveQuote, amount?: bigint) {
+    const tokens = amount ?? position.tokenAmount;
     if (position.venue === 'pumpswap') {
       const state = this.swapPools.get(position.mint);
       if (!state) throw new Error('pool for this position is not known — cannot sell');
@@ -374,18 +493,13 @@ export class PositionManager {
       const quote =
         knownCurve ?? (await this.executor.getSwapPool(new PublicKey(position.mint)))?.quote;
       if (!quote) throw new Error('could not read the pool to price the exit');
-      return this.executor.sellSwap(
-        state.pool,
-        state.baseTokenProgram,
-        quote,
-        position.tokenAmount,
-      );
+      return this.executor.sellSwap(state.pool, state.baseTokenProgram, quote, tokens);
     }
     return this.executor.sell(
       new PublicKey(position.mint),
       new PublicKey(position.creator),
       new PublicKey(position.tokenProgram),
-      position.tokenAmount,
+      tokens,
       knownCurve,
     );
   }

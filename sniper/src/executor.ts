@@ -318,6 +318,11 @@ export class Executor {
     throw new Error(`could not read token balance: ${String(lastError)}`);
   }
 
+  /**
+   * Sells `tokenAmount`, or the whole balance when that is smaller. A scale-out passes
+   * less than it holds, and the token account is then left open on purpose — closing
+   * it needs a zero balance, and the remainder is the whole point of a partial.
+   */
   async sell(
     mint: PublicKey,
     creator: PublicKey,
@@ -339,16 +344,18 @@ export class Executor {
 
     const held = await this.getTokenBalance(mint, tokenProgram);
     if (held <= 0n) throw new Error('no tokens held to sell');
+    const toSell = tokenAmount > 0n && tokenAmount < held ? tokenAmount : held;
 
-    const expectedSol = solForTokens(curve, held);
+    const expectedSol = solForTokens(curve, toSell);
     const minSolOutput = (expectedSol * BigInt(10_000 - this.config.slippageBps)) / 10_000n;
 
     const result = await this.sendWithRecipients(async (feeRecipient, buyback) => {
       const params = this.tradeParams(mint, creator, tokenProgram, feeRecipient, buyback);
-      return [buildSellInstruction(params, held, minSolOutput)];
+      return [buildSellInstruction(params, toSell, minSolOutput)];
     }, 'sell');
 
-    const rentReclaimed = await this.closeTokenAccount(mint, tokenProgram);
+    const rentReclaimed =
+      toSell === held ? await this.closeTokenAccount(mint, tokenProgram) : false;
     return { result, solOut: lamportsToSol(expectedSol), rentReclaimed };
   }
 
@@ -543,8 +550,9 @@ export class Executor {
 
     const held = await this.getTokenBalance(pool.baseMint, baseTokenProgram);
     if (held <= 0n) throw new Error('no tokens held to sell');
+    const toSell = tokenAmount > 0n && tokenAmount < held ? tokenAmount : held;
 
-    const expected = solForTokens(quote, held);
+    const expected = solForTokens(quote, toSell);
     const minQuoteOut = (expected * BigInt(10_000 - this.config.slippageBps)) / 10_000n;
 
     const result = await this.sendWithSwapRecipients(
@@ -560,7 +568,7 @@ export class Executor {
             protocolFeeRecipient,
             buybackFeeRecipient,
           },
-          held,
+          toSell,
           minQuoteOut,
         ),
         buildUnwrapSolInstruction(this.wallet.publicKey),
@@ -568,7 +576,8 @@ export class Executor {
       'AMM sell',
     );
 
-    const rentReclaimed = await this.closeTokenAccount(pool.baseMint, baseTokenProgram);
+    const rentReclaimed =
+      toSell === held ? await this.closeTokenAccount(pool.baseMint, baseTokenProgram) : false;
     return { result, solOut: lamportsToSol(net), rentReclaimed };
   }
 

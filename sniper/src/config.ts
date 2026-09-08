@@ -57,6 +57,10 @@ export interface Config {
   priorityFeeMicroLamports: number;
   computeUnitLimit: number;
   takeProfitPct: number;
+  partialTakeProfitPct: number;
+  partialSellPct: number;
+  breakEvenAfterPartial: boolean;
+  exitOnCreatorSell: boolean;
   stopLossPct: number;
   trailingStopPct: number;
   maxHoldSeconds: number;
@@ -65,7 +69,7 @@ export interface Config {
   blockedNamePatterns: string[];
   maxCreatorLaunchesPerHour: number;
   maxDevBuyPct: number;
-  entryMode: 'snipe' | 'momentum' | 'copy' | 'graduate';
+  entryMode: 'snipe' | 'momentum' | 'copy' | 'delay' | 'graduate';
   momentumMinLiquiditySol: number;
   momentumMinBuys: number;
   momentumMaxAgeSeconds: number;
@@ -75,6 +79,8 @@ export interface Config {
   graduateMinAgeSeconds: number;
   graduateMaxAgeSeconds: number;
   graduateMinBuyRatio: number;
+  delaySeconds: number;
+  delayMinLiquiditySol: number;
   learningEnabled: boolean;
   learningMinTrades: number;
   learningMinScore: number;
@@ -132,6 +138,17 @@ export function loadConfig(): Config {
     priorityFeeMicroLamports: num('PRIORITY_FEE_MICROLAMPORTS', 500_000),
     computeUnitLimit: num('COMPUTE_UNIT_LIMIT', 250_000),
     takeProfitPct: num('TAKE_PROFIT_PCT', 50),
+    // Scaling out is the one honest way to raise win rate: banking part of the
+    // position at a near target turns trades that would have round-tripped back to a
+    // loss into small wins, while the remainder keeps the tail. 0 disables it.
+    partialTakeProfitPct: num('PARTIAL_TAKE_PROFIT_PCT', 0),
+    partialSellPct: Math.min(95, Math.max(5, num('PARTIAL_SELL_PCT', 50))),
+    // After banking a partial, the rest rides with the stop at entry. A position that
+    // has already returned part of its cost should not be allowed to become a loss.
+    breakEvenAfterPartial: bool('BREAK_EVEN_AFTER_PARTIAL', true),
+    // The creator dumping their own supply is the clearest rug signal there is, and it
+    // arrives free in the same event stream that prices the position.
+    exitOnCreatorSell: bool('EXIT_ON_CREATOR_SELL', true),
     stopLossPct: num('STOP_LOSS_PCT', 30),
     trailingStopPct: num('TRAILING_STOP_PCT', 0),
     maxHoldSeconds: num('MAX_HOLD_SECONDS', 300),
@@ -145,13 +162,15 @@ export function loadConfig(): Config {
     // A creator holding a large slice of their own supply is the classic setup for
     // dumping it on whoever snipes the launch. 0 disables the check.
     maxDevBuyPct: num('MAX_DEV_BUY_PCT', 0),
-    // 'snipe' races the launch; 'momentum' waits for a token to prove itself first,
-    // which trades away the launch pop for independence from latency; 'graduate'
-    // leaves the bonding curve entirely and trades the AMM pool a token lands in
-    // after it graduates, where being first stops mattering at all.
+    // 'snipe' races the launch; 'delay' buys the same launches a fixed time later;
+    // 'momentum' waits for a token to prove itself first, which trades away the launch
+    // pop for independence from latency; 'graduate' leaves the bonding curve entirely
+    // and trades the AMM pool a token lands in after it graduates.
     entryMode: ((): Config['entryMode'] => {
       const mode = process.env.ENTRY_MODE || 'snipe';
-      return mode === 'momentum' || mode === 'copy' || mode === 'graduate' ? mode : 'snipe';
+      return mode === 'momentum' || mode === 'copy' || mode === 'delay' || mode === 'graduate'
+        ? mode
+        : 'snipe';
     })(),
     momentumMinLiquiditySol: num('MOMENTUM_MIN_LIQUIDITY_SOL', 5),
     momentumMinBuys: num('MOMENTUM_MIN_BUYS', 8),
@@ -166,6 +185,14 @@ export function loadConfig(): Config {
     graduateMinAgeSeconds: num('GRADUATE_MIN_AGE_SECONDS', 60),
     graduateMaxAgeSeconds: num('GRADUATE_MAX_AGE_SECONDS', 900),
     graduateMinBuyRatio: num('GRADUATE_MIN_BUY_RATIO', 0.55),
+    // Delay mode buys every launch that passes the filters, a fixed time after it
+    // happened. Nothing about the token has to qualify — the wait is the only
+    // variable, which is what makes it a clean test of whether the launch pop is
+    // worth anything once the race is conceded.
+    delaySeconds: num('DELAY_SECONDS', 30),
+    // Off by default on purpose: a liquidity floor would quietly turn this into
+    // momentum mode and stop it measuring the delay on its own.
+    delayMinLiquiditySol: num('DELAY_MIN_LIQUIDITY_SOL', 0),
     // Learning records outcomes from the first trade, but only starts rejecting
     // candidates once there is enough history for a score to mean anything.
     learningEnabled: bool('LEARNING_ENABLED', true),

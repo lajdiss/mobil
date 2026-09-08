@@ -25,6 +25,8 @@ export interface DashboardState {
   stats: { detected: number; passed: number; bought: number; errors: number; missed: number };
   /** Present only in graduate mode: health of the AMM stream. */
   graduates: unknown;
+  /** Launches counting down to a delayed entry. */
+  pendingEntries: number;
   stream: {
     alive: boolean;
     silentMs: number | null;

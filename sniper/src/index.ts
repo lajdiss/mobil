@@ -49,6 +49,9 @@ interface FeedEntry {
   reason?: string;
 }
 
+/** Launches waiting out their delay; shown so the dashboard is not silent while it waits. */
+const delayed = new Set<string>();
+
 const feed: FeedEntry[] = [];
 const logs: string[] = [];
 const stats = { detected: 0, passed: 0, bought: 0, errors: 0, missed: 0 };
@@ -239,18 +242,31 @@ async function enterPosition(token: DetectedToken) {
       virtualQuoteReserves: token.virtualQuoteReserves || token.virtualSolReserves,
       realTokenReserves: token.realTokenReserves,
     };
-    // Momentum entries happen well after the launch, so the reserves in the create
-    // event are long stale. Falling back to them is not a degraded price, it is a
-    // fictional one: the token qualified precisely because it went up, so a stale
+    // Every mode except a snipe enters well after the launch, so the reserves in the
+    // create event are long stale. Falling back to them is not a degraded price, it is
+    // a fictional one: the token qualified precisely because it moved, so a stale
     // quote books a cheap entry against a real exit and invents a win. Measured once —
     // five such trades reported +451% to +474% and turned a losing round into a
     // passing one. Without a current price there is no trade.
-    if (config.entryMode === 'momentum') {
+    if (config.entryMode !== 'snipe') {
       const now = await executor.getBondingCurve(token.mint).catch(() => null);
       if (!now) {
         stats.errors++;
         log(`skipping ${token.symbol}: could not read the current price`);
         return;
+      }
+      if (now.complete) {
+        log(`skipping ${token.symbol}: already graduated off the curve`);
+        return;
+      }
+      // Only checked when a floor is configured; at the default of 0 this mode buys
+      // whatever it finds, which is the point.
+      if (config.entryMode === 'delay' && config.delayMinLiquiditySol > 0) {
+        const liquiditySol = Number(now.virtualQuoteReserves) / 1e9 - 30;
+        if (liquiditySol < config.delayMinLiquiditySol) {
+          log(`skipping ${token.symbol}: ${liquiditySol.toFixed(2)} SOL liquidity`);
+          return;
+        }
       }
       entryQuote = now;
       metrics.mark(mintKey, 'quote');
@@ -281,6 +297,10 @@ async function enterPosition(token: DetectedToken) {
       creator: token.creator.toBase58(),
       tokenProgram: token.tokenProgram.toBase58(),
       tokenAmount,
+      initialTokenAmount: tokenAmount,
+      realisedSol: 0,
+      partialsTaken: 0,
+      stopAtBreakEven: false,
       entrySol: solSpent,
       currentSol: solSpent,
       peakSol: solSpent,
@@ -390,6 +410,10 @@ async function enterGraduate(candidate: GraduateCandidate) {
       creator: state.pool.coinCreator.toBase58(),
       tokenProgram: state.baseTokenProgram.toBase58(),
       tokenAmount,
+      initialTokenAmount: tokenAmount,
+      realisedSol: 0,
+      partialsTaken: 0,
+      stopAtBreakEven: false,
       entrySol: solSpent,
       currentSol: solSpent,
       peakSol: solSpent,
@@ -526,6 +550,7 @@ const getState = (): DashboardState => ({
   // one against the AMM, reported alongside rather than in place of it.
   stream: detector.health(),
   graduates: config.entryMode === 'graduate' ? graduates.health() : null,
+  pendingEntries: delayed.size,
 });
 
 const EDITABLE_NUMERIC = new Set([
@@ -583,6 +608,7 @@ async function main() {
     momentum: `momentum (wait for ${config.momentumMinLiquiditySol} SOL liquidity and ${config.momentumMinBuys} buys)`,
     copy: `copy (follow wallets with ${config.copyMinRealisedSol}+ SOL over ${config.copyMinClosed}+ trades)`,
     snipe: 'snipe (buy at launch)',
+    delay: `delay (buy every qualifying launch ${config.delaySeconds}s after it happens)`,
     graduate:
       `graduate (AMM pools ${config.graduateMinAgeSeconds}s+ past graduation with ` +
       `${config.graduateMinLiquiditySol}+ SOL and ${config.graduateMinBuys}+ buys)`,

@@ -1,0 +1,14 @@
+import { Connection } from '@solana/web3.js';
+import { appendFileSync } from 'node:fs';
+import { PUMP_PROGRAM, TRADE_EVENT_DISCRIMINATOR } from './src/pump.js';
+import { PUMPSWAP_PROGRAM } from './src/pumpswap.js';
+const OUT='/tmp/claude-0/twostream.log';
+const say=(s:string)=>appendFileSync(OUT,s+'\n');
+const EP=process.env.EP!, EP2=process.env.EP2||EP;
+const a=new Connection(EP,{commitment:'confirmed',wsEndpoint:EP.replace(/^http/,'ws')});
+const b=new Connection(EP2,{commitment:'confirmed',wsEndpoint:EP2.replace(/^http/,'ws')});
+let pump=0, swap=0;
+a.onLogs(PUMP_PROGRAM,(l)=>{ if(l.err)return; for(const line of l.logs){ if(!line.startsWith('Program data: '))continue; const d=Buffer.from(line.slice(14),'base64'); if(d.length>=8&&d.subarray(0,8).equals(TRADE_EVENT_DISCRIMINATOR)) pump++; } },'processed');
+b.onLogs(PUMPSWAP_PROGRAM,(l)=>{ if(l.err)return; swap+=l.logs.length?1:0; },'processed');
+let m=0;
+setInterval(()=>{ m++; say(`[${m}m] pumpTrades=${pump} swapBatches=${swap}  (pump ep=${EP}, amm ep=${EP2})`); pump=0; swap=0; },60000);
