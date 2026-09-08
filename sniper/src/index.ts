@@ -7,6 +7,7 @@ import { CreatorHistory, evaluate } from './filters.js';
 import { KeywordMemory } from './learning.js';
 import { ConsensusTracker } from './consensus.js';
 import { MomentumTracker } from './momentum.js';
+import { PathRecorder } from './recorder.js';
 import { PositionManager, type Position } from './positions.js';
 import { Metrics } from './metrics.js';
 import { WalletTracker } from './wallets.js';
@@ -117,6 +118,7 @@ const positions = new PositionManager(
     }
   },
   log,
+  config.recordPath ? new PathRecorder(config.recordPath) : undefined,
 );
 const recorded = new Set<string>();
 

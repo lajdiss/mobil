@@ -97,6 +97,7 @@ export interface Config {
   cooldownMinutes: number;
   maxDailyFeeSol: number;
   walletPath: string;
+  recordPath: string;
   port: number;
   exitPollMs: number;
   dryRunFillDelayMs: number;
@@ -226,6 +227,11 @@ export function loadConfig(): Config {
     cooldownMinutes: num('COOLDOWN_MINUTES', 30),
     maxDailyFeeSol: num('MAX_DAILY_FEE_SOL', 0),
     walletPath: process.env.WALLET_PATH || 'data/wallet-stats.json',
+    // When set, every position's price path is written here for offline replay. Run
+    // the recording with the exits switched off — a wide take-profit and a long hold —
+    // or the path stops where this run's own rules decided and no replay can recover
+    // the part that was never observed.
+    recordPath: process.env.RECORD_PATH || '',
     port: num('PORT', 8787),
     // Backstop for the account stream; a position nobody is watching has no stop-loss.
     exitPollMs: Math.max(500, num('EXIT_POLL_MS', 2000)),

@@ -3,6 +3,7 @@ import type { Config } from './config.js';
 import { Executor, lamportsToSol } from './executor.js';
 import { solForTokens, type CurveQuote, type TradeUpdate } from './pump.js';
 import { poolQuote, type SwapPool, type SwapTrade } from './pumpswap.js';
+import type { PathRecorder } from './recorder.js';
 
 export type PositionStatus = 'open' | 'closing' | 'closed' | 'failed';
 export type ExitReason =
@@ -119,6 +120,7 @@ export class PositionManager {
     private readonly config: Config,
     private readonly onChange: (position: Position) => void,
     private readonly onLog: (message: string) => void,
+    private readonly recorder?: PathRecorder,
   ) {}
 
   has(mint: string): boolean {
@@ -219,6 +221,15 @@ export class PositionManager {
 
   add(position: Position) {
     this.positions.set(position.mint, position);
+    this.recorder?.begin({
+      mint: position.mint,
+      symbol: position.symbol,
+      venue: position.venue,
+      openedAt: position.openedAt,
+      entrySol: position.entrySol,
+      entryTokens: position.tokenAmount.toString(),
+      feeBps: position.venue === 'pumpswap' ? this.executor.swapFeeBpsValue : this.executor.feeBps,
+    });
     this.onChange(position);
 
     if (this.config.maxHoldSeconds > 0) {
@@ -239,6 +250,12 @@ export class PositionManager {
     // it costs nothing: the seller's wallet is already in the event being used to
     // price the position. Acted on before the price update, because by the time the
     // stop-loss sees the damage the exit is worth far less.
+    if (!trade.isBuy && trade.user.toBase58() === position.creator) {
+      // Recorded regardless of whether the rule is armed: a replay has to be able to
+      // test a creator-sell exit that this run did not take.
+      this.recorder?.creatorSale(mint, this.sellShareBps(trade));
+    }
+
     if (
       this.config.exitOnCreatorSell &&
       !trade.isBuy &&
@@ -278,6 +295,7 @@ export class PositionManager {
 
     position.history.push(position.pnlPct);
     if (position.history.length > HISTORY_SAMPLES) position.history.shift();
+    this.recorder?.sample(mint, curve);
 
     if (curve.realTokenReserves !== undefined) {
       const sold = INITIAL_REAL_TOKEN_RESERVES - curve.realTokenReserves;
@@ -444,10 +462,13 @@ export class PositionManager {
    * the threshold means the same thing on a thin curve and a deep one: what matters is
    * whether the sale moves the price, not how many lamports it was.
    */
+  private sellShareBps(trade: TradeUpdate): number {
+    if (trade.virtualQuoteReserves <= 0n) return 0;
+    return Number((trade.solAmount * 10_000n) / trade.virtualQuoteReserves);
+  }
+
   private isMaterialSell(trade: TradeUpdate): boolean {
-    if (trade.virtualQuoteReserves <= 0n) return false;
-    const shareBps = Number((trade.solAmount * 10_000n) / trade.virtualQuoteReserves);
-    return shareBps >= this.config.creatorSellMinBps;
+    return this.sellShareBps(trade) >= this.config.creatorSellMinBps;
   }
 
   private shouldTakePartial(position: Position): boolean {
@@ -495,6 +516,7 @@ export class PositionManager {
       position.partialsTaken--;
       this.onLog(`partial sell failed for ${position.symbol}: ${(err as Error).message}`);
     }
+    this.recorder?.finish(mint);
     this.onChange(position);
   }
 
