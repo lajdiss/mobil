@@ -43,6 +43,10 @@ function pathFromLaunch(launch: RecordedLaunch, delaySeconds: number): RecordedP
   const entry = after[0];
   const vt = BigInt(entry.vt);
   const vq = BigInt(entry.vq);
+  // A curve quoted in something other than SOL reports zero SOL reserves, and every
+  // price here divides by them. Scoring it would produce NaN, which averages into an
+  // expectancy silently rather than raising — so it is dropped, not priced.
+  if (vt <= 0n || vq <= 0n) return null;
   const feeMultiplier = (1e4 + launch.feeBps) / 1e4;
   const tokens = tokensForSol(vt, vq, BUY_LAMPORTS);
   if (tokens <= 0n) return null;
@@ -90,6 +94,11 @@ console.log(
     `(longest ${Math.max(...coverage).toFixed(0)}s)\n`,
 );
 
+// 0s is included as a reference line only. It prices the entry off the launch event's
+// own reserves — the price before anyone traded the token — which no transaction can
+// actually get: by the time a buy lands, it has moved the curve itself and competed
+// with everyone else doing the same. Read it as the unattainable upper bound, not as
+// a strategy.
 const DELAYS = [0, 2, 5, 10, 20, 30, 60, 120, 240];
 const EXITS: ExitRule[] = [
   rule('TP30 / SL20', { takeProfitPct: 30, stopLossPct: 20 }),
@@ -103,7 +112,13 @@ const EXITS: ExitRule[] = [
 const pad = (s: string, n: number) => s.padEnd(n);
 const cell = (v: number | null, n: number) => (v === null ? '—' : v.toFixed(1)).padStart(n);
 
-for (const label of ['WIN RATE %', 'EXPECTANCY %'] as const) {
+/**
+ * Three tables, not one. A mean on a fat-tailed distribution is one lucky trade away
+ * from meaningless — an early run showed +54% expectancy at a delay whose median peak
+ * was negative, which is one winner carrying twenty-four losers. The median says what
+ * a typical trade did, and top3 says how much of the mean came from three of them.
+ */
+for (const label of ['WIN RATE %', 'EXPECTANCY %', 'MEDIAN %', 'TOP-3 SHARE OF PROFIT %'] as const) {
   console.log(`\n${label}  (rows = seconds waited after launch, columns = exit rule)`);
   console.log(pad('  wait', 8) + EXITS.map((e) => pad(e.label, 14)).join('') + 'n');
   console.log('-'.repeat(8 + EXITS.length * 14 + 4));
@@ -114,13 +129,29 @@ for (const label of ['WIN RATE %', 'EXPECTANCY %'] as const) {
     if (paths.length === 0) continue;
     const cells = EXITS.map((exit) => {
       const outcomes = paths.map((p) => simulate(p, exit));
-      const value =
-        label === 'WIN RATE %'
-          ? (outcomes.filter((o) => o.pct > 0).length / outcomes.length) * 100
-          : outcomes.reduce((a, o) => a + o.pct, 0) / outcomes.length;
+      const pcts = outcomes.map((o) => o.pct);
+      const total = pcts.reduce((a, b) => a + b, 0);
+      let value: number | null;
+      if (label === 'WIN RATE %') {
+        value = (pcts.filter((p) => p > 0).length / pcts.length) * 100;
+      } else if (label === 'EXPECTANCY %') {
+        value = total / pcts.length;
+      } else if (label === 'MEDIAN %') {
+        value = median(pcts);
+      } else {
+        // Only meaningful when the rule made money overall; otherwise there is no
+        // profit for three trades to be a share of.
+        const top3 = [...pcts].sort((a, b) => b - a).slice(0, 3).reduce((a, b) => a + b, 0);
+        value = total > 0 ? (top3 / total) * 100 : null;
+      }
       return cell(value, 8).padEnd(14);
     });
-    console.log(pad(`  ${delay}s`, 8) + cells.join('') + String(paths.length).padStart(4));
+    console.log(
+      pad(`  ${delay}s`, 8) +
+        cells.join('') +
+        String(paths.length).padStart(4) +
+        (delay === 0 ? '   <- unattainable (launch price)' : ''),
+    );
   }
 }
 

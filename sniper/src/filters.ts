@@ -1,5 +1,6 @@
 import type { Config } from './config.js';
 import type { DetectedToken } from './detector.js';
+import { WSOL_MINT } from './pumpswap.js';
 
 export interface FilterVerdict {
   passed: boolean;
@@ -62,6 +63,19 @@ export function evaluate(
 
   if (token.isMayhemMode) {
     return { passed: false, reason: 'mayhem mode token' };
+  }
+
+  // pump.fun allows curves quoted in something other than SOL. Every price in this
+  // bot — the entry quote, the stop-loss, the exit — divides by the quote reserves,
+  // and for those tokens the SOL-denominated reserves are zero. Found in recorded
+  // data: one launch produced a NaN profit rather than an error, which is the worst
+  // possible failure because nothing raises. Reject rather than mispricing them.
+  if (!token.quoteMint.equals(WSOL_MINT)) {
+    return { passed: false, reason: 'curve is not quoted in SOL' };
+  }
+  const quoteReserves = token.virtualQuoteReserves || token.virtualSolReserves;
+  if (quoteReserves <= 0n) {
+    return { passed: false, reason: 'curve reports no quote reserves' };
   }
 
   // Selling a cashback coin fails with InvalidCashbackAccumulator (6073) — the sell
