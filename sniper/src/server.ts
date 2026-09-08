@@ -64,6 +64,19 @@ export function startServer(options: ServerOptions, hooks: ServerHooks) {
   const app = express();
   app.use(express.json());
 
+  /**
+   * A bigint reaches JSON.stringify as a throw, not a value. That is a dashboard
+   * concern, but it used to be a fatal one: the broadcast runs on a timer, so a single
+   * unconverted field killed the process — while it was holding open positions with
+   * nobody left to sell them. Nothing about rendering state is worth that, so the
+   * conversion happens here as well as at the source.
+   */
+  const encode = (message: unknown) =>
+    JSON.stringify(message, (_key, value) =>
+      typeof value === 'bigint' ? value.toString() : value,
+    );
+
+
   // The page itself carries no data, so it loads freely; everything that reads state
   // or moves money goes through the token.
   app.use(express.static(join(here, 'public')));
@@ -79,7 +92,7 @@ export function startServer(options: ServerOptions, hooks: ServerHooks) {
   });
 
   app.get('/api/state', (_req, res) => {
-    res.json(hooks.getState());
+    res.type('application/json').send(encode(hooks.getState()));
   });
 
   app.post('/api/armed', (req, res) => {
@@ -128,11 +141,11 @@ export function startServer(options: ServerOptions, hooks: ServerHooks) {
         return;
       }
     }
-    socket.send(JSON.stringify({ type: 'state', payload: hooks.getState() }));
+    socket.send(encode({ type: 'state', payload: hooks.getState() }));
   });
 
   const broadcast = (message: unknown) => {
-    const data = JSON.stringify(message);
+    const data = encode(message);
     for (const client of wss.clients) {
       if (client.readyState === WebSocket.OPEN) client.send(data);
     }

@@ -529,7 +529,11 @@ const getState = (): DashboardState => ({
     maxOpenPositions: config.maxOpenPositions,
     dailySpendCapSol: config.dailySpendCapSol,
   },
-  positions: positions.list().map((p) => ({ ...p, tokenAmount: p.tokenAmount.toString() })),
+  positions: positions.list().map((p) => ({
+    ...p,
+    tokenAmount: p.tokenAmount.toString(),
+    initialTokenAmount: p.initialTokenAmount.toString(),
+  })),
   performance: positions.performance(),
   learning: memory.stats(),
   metrics: metrics.snapshot(),
