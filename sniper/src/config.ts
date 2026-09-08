@@ -65,11 +65,16 @@ export interface Config {
   blockedNamePatterns: string[];
   maxCreatorLaunchesPerHour: number;
   maxDevBuyPct: number;
-  entryMode: 'snipe' | 'momentum' | 'copy';
+  entryMode: 'snipe' | 'momentum' | 'copy' | 'graduate';
   momentumMinLiquiditySol: number;
   momentumMinBuys: number;
   momentumMaxAgeSeconds: number;
   momentumMinBuyRatio: number;
+  graduateMinLiquiditySol: number;
+  graduateMinBuys: number;
+  graduateMinAgeSeconds: number;
+  graduateMaxAgeSeconds: number;
+  graduateMinBuyRatio: number;
   learningEnabled: boolean;
   learningMinTrades: number;
   learningMinScore: number;
@@ -141,15 +146,26 @@ export function loadConfig(): Config {
     // dumping it on whoever snipes the launch. 0 disables the check.
     maxDevBuyPct: num('MAX_DEV_BUY_PCT', 0),
     // 'snipe' races the launch; 'momentum' waits for a token to prove itself first,
-    // which trades away the launch pop for independence from latency.
+    // which trades away the launch pop for independence from latency; 'graduate'
+    // leaves the bonding curve entirely and trades the AMM pool a token lands in
+    // after it graduates, where being first stops mattering at all.
     entryMode: ((): Config['entryMode'] => {
       const mode = process.env.ENTRY_MODE || 'snipe';
-      return mode === 'momentum' || mode === 'copy' ? mode : 'snipe';
+      return mode === 'momentum' || mode === 'copy' || mode === 'graduate' ? mode : 'snipe';
     })(),
     momentumMinLiquiditySol: num('MOMENTUM_MIN_LIQUIDITY_SOL', 5),
     momentumMinBuys: num('MOMENTUM_MIN_BUYS', 8),
     momentumMaxAgeSeconds: num('MOMENTUM_MAX_AGE_SECONDS', 120),
     momentumMinBuyRatio: num('MOMENTUM_MIN_BUY_RATIO', 0.6),
+    // A graduated pool opens with real liquidity — roughly 85 SOL — so the bar here
+    // is about the pool still being healthy, not about it being large.
+    graduateMinLiquiditySol: num('GRADUATE_MIN_LIQUIDITY_SOL', 60),
+    graduateMinBuys: num('GRADUATE_MIN_BUYS', 15),
+    // The whole point of this mode: wait out the graduation dump instead of racing
+    // into it. Entering at zero seconds would be the same losing race as a snipe.
+    graduateMinAgeSeconds: num('GRADUATE_MIN_AGE_SECONDS', 60),
+    graduateMaxAgeSeconds: num('GRADUATE_MAX_AGE_SECONDS', 900),
+    graduateMinBuyRatio: num('GRADUATE_MIN_BUY_RATIO', 0.55),
     // Learning records outcomes from the first trade, but only starts rejecting
     // candidates once there is enough history for a score to mean anything.
     learningEnabled: bool('LEARNING_ENABLED', true),

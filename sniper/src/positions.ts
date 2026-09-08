@@ -2,12 +2,17 @@ import { PublicKey } from '@solana/web3.js';
 import type { Config } from './config.js';
 import { Executor, lamportsToSol } from './executor.js';
 import { solForTokens, type CurveQuote, type TradeUpdate } from './pump.js';
+import { poolQuote, type SwapPool, type SwapTrade } from './pumpswap.js';
 
 export type PositionStatus = 'open' | 'closing' | 'closed' | 'failed';
 export type ExitReason = 'take-profit' | 'stop-loss' | 'trailing-stop' | 'timeout' | 'manual';
 
+/** Which market the position lives in — the bonding curve, or the AMM after it. */
+export type Venue = 'pump' | 'pumpswap';
+
 export interface Position {
   mint: string;
+  venue: Venue;
   name: string;
   symbol: string;
   creator: string;
@@ -81,6 +86,11 @@ export interface Performance {
 
 export class PositionManager {
   private positions = new Map<string, Position>();
+  /**
+   * AMM positions need the pool and its token program to be sold, and neither belongs
+   * in the dashboard payload. Kept alongside rather than inside the position.
+   */
+  private swapPools = new Map<string, { pool: SwapPool; baseTokenProgram: PublicKey }>();
   private timeoutTimers = new Map<string, NodeJS.Timeout>();
   private pollTimer: NodeJS.Timeout | null = null;
   private polling = false;
@@ -167,6 +177,11 @@ export class PositionManager {
     };
   }
 
+  /** Called with the pool before adding an AMM position, so the exit can sell it. */
+  registerSwapPool(mint: string, pool: SwapPool, baseTokenProgram: PublicKey) {
+    this.swapPools.set(mint, { pool, baseTokenProgram });
+  }
+
   add(position: Position) {
     this.positions.set(position.mint, position);
     this.onChange(position);
@@ -184,6 +199,14 @@ export class PositionManager {
     const mint = trade.mint.toBase58();
     if (!this.positions.has(mint)) return;
     this.applyCurve(mint, trade, 'stream');
+  }
+
+  /** The AMM's own event stream, carrying post-trade reserves for a graduated pool. */
+  onSwapTrade(trade: SwapTrade, baseMint: PublicKey | null) {
+    if (!baseMint) return;
+    const mint = baseMint.toBase58();
+    if (!this.positions.has(mint)) return;
+    this.applyCurve(mint, poolQuote(trade.poolBaseReserves, trade.poolQuoteReserves), 'stream');
   }
 
   private applyCurve(mint: string, curve: CurveQuote, source: 'stream' | 'poll') {
@@ -247,8 +270,21 @@ export class PositionManager {
 
     this.polling = true;
     try {
-      const curves = await this.executor.getBondingCurves(open.map((p) => new PublicKey(p.mint)));
-      for (const [mint, curve] of curves) this.applyCurve(mint, curve, 'poll');
+      const onCurve = open.filter((p) => p.venue === 'pump');
+      if (onCurve.length > 0) {
+        const curves = await this.executor.getBondingCurves(
+          onCurve.map((p) => new PublicKey(p.mint)),
+        );
+        for (const [mint, curve] of curves) this.applyCurve(mint, curve, 'poll');
+      }
+      // AMM pools have no batched read: the reserves live in two token accounts per
+      // pool rather than one account per mint, so these are polled one at a time.
+      for (const position of open.filter((p) => p.venue === 'pumpswap')) {
+        const state = await this.executor
+          .getSwapPool(new PublicKey(position.mint))
+          .catch(() => null);
+        if (state) this.applyCurve(position.mint, state.quote, 'poll');
+      }
     } catch {
       // A failed poll is not fatal; the stream may still be delivering.
     } finally {
@@ -283,13 +319,7 @@ export class PositionManager {
     }
 
     try {
-      const { result, solOut, rentReclaimed } = await this.executor.sell(
-        new PublicKey(position.mint),
-        new PublicKey(position.creator),
-        new PublicKey(position.tokenProgram),
-        position.tokenAmount,
-        knownCurve,
-      );
+      const { result, solOut, rentReclaimed } = await this.sellPosition(position, knownCurve);
       position.status = 'closed';
       position.exitSol = solOut;
 
@@ -329,6 +359,35 @@ export class PositionManager {
     }
 
     this.onChange(position);
+  }
+
+  /**
+   * The two venues take different instructions and price from different accounts, so
+   * the exit picks by venue rather than assuming the bonding curve.
+   */
+  private async sellPosition(position: Position, knownCurve?: CurveQuote) {
+    if (position.venue === 'pumpswap') {
+      const state = this.swapPools.get(position.mint);
+      if (!state) throw new Error('pool for this position is not known — cannot sell');
+      // Without a current price there is no safe minimum output, so read one rather
+      // than sell blind.
+      const quote =
+        knownCurve ?? (await this.executor.getSwapPool(new PublicKey(position.mint)))?.quote;
+      if (!quote) throw new Error('could not read the pool to price the exit');
+      return this.executor.sellSwap(
+        state.pool,
+        state.baseTokenProgram,
+        quote,
+        position.tokenAmount,
+      );
+    }
+    return this.executor.sell(
+      new PublicKey(position.mint),
+      new PublicKey(position.creator),
+      new PublicKey(position.tokenProgram),
+      position.tokenAmount,
+      knownCurve,
+    );
   }
 
   /** Panic path: closing one at a time would leave the last positions waiting. */

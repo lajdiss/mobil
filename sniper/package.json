@@ -6,6 +6,7 @@
   "scripts": {
     "start": "tsx src/index.ts",
     "verify": "tsx src/verify.ts",
+    "verify:amm": "tsx src/verify-swap.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

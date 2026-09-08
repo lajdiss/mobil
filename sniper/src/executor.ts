@@ -26,7 +26,26 @@ import {
   type BondingCurve,
   type GlobalState,
   type TradeParams,
+  TOKEN_PROGRAM,
 } from './pump.js';
+import {
+  ataFor,
+  buildSwapBuyInstruction,
+  buildSwapSellInstruction,
+  buildUnwrapSolInstruction,
+  buildWrapSolInstructions,
+  decodePool,
+  decodeSwapGlobalConfig,
+  graduatedPoolPda,
+  poolQuote,
+  swapFeeBps,
+  swapFeeRecipientCandidates,
+  swapGlobalConfigPda,
+  tokenProgramFromOwner,
+  WSOL_MINT,
+  type SwapGlobalConfig,
+  type SwapPool,
+} from './pumpswap.js';
 
 export const LAMPORTS_PER_SOL = 1_000_000_000;
 export const solToLamports = (sol: number) => BigInt(Math.round(sol * LAMPORTS_PER_SOL));
@@ -349,6 +368,208 @@ export class Executor {
     } catch {
       return false;
     }
+  }
+
+  // --- pump.fun AMM (post-graduation) ---------------------------------------
+
+  private swapConfig: SwapGlobalConfig | null = null;
+  private swapConfigFetchedAt = 0;
+
+  /** Total AMM take per side: lp plus protocol plus the coin creator's cut. */
+  get swapFeeBpsValue(): number {
+    return this.swapConfig ? swapFeeBps(this.swapConfig) : 30;
+  }
+
+  private async getSwapConfig(): Promise<SwapGlobalConfig> {
+    const age = Date.now() - this.swapConfigFetchedAt;
+    if (this.swapConfig && age < 5 * 60_000) return this.swapConfig;
+    const info = await this.connection.getAccountInfo(swapGlobalConfigPda());
+    if (!info) throw new Error('pump AMM global config not found');
+    this.swapConfig = decodeSwapGlobalConfig(info.data);
+    this.swapConfigFetchedAt = Date.now();
+    return this.swapConfig;
+  }
+
+  /**
+   * A graduated pool, its token program and both reserves in a single round trip.
+   *
+   * The pool address derives from the mint alone, and the vaults are the pool's own
+   * associated token accounts, so every address here is computed locally and the four
+   * candidates go out together. The vault the pool account names still has to match
+   * the one derived from the mint's token program: if they disagree, something about
+   * the pool is not what this code assumes and it refuses to trade rather than guess.
+   */
+  async getSwapPool(
+    baseMint: PublicKey,
+  ): Promise<{ pool: SwapPool; baseTokenProgram: PublicKey; quote: CurveQuote } | null> {
+    const address = graduatedPoolPda(baseMint);
+    const quoteVault = ataFor(address, WSOL_MINT, TOKEN_PROGRAM);
+    const infos = await this.rpc(() =>
+      this.connection.getMultipleAccountsInfo(
+        [address, baseMint, quoteVault, ataFor(address, baseMint, TOKEN_PROGRAM)],
+        'processed',
+      ),
+    );
+    const [poolInfo, mintInfo, quoteInfo] = infos;
+    if (!poolInfo || !mintInfo || !quoteInfo) return null;
+
+    const pool = decodePool(address, poolInfo.data);
+    if (!pool) return null;
+    const baseTokenProgram = tokenProgramFromOwner(mintInfo.owner);
+    const baseVault = ataFor(address, baseMint, baseTokenProgram);
+    if (!pool.poolBaseTokenAccount.equals(baseVault)) {
+      throw new Error('pool base vault is not the derived associated account');
+    }
+
+    // The classic-SPL candidate went out with the batch, so a Token-2022 mint needs
+    // one more read and a classic one needs none.
+    const baseInfo = baseTokenProgram.equals(TOKEN_PROGRAM)
+      ? infos[3]
+      : (await this.rpc(() => this.connection.getMultipleAccountsInfo([baseVault], 'processed')))[0];
+    if (!baseInfo) return null;
+
+    return {
+      pool,
+      baseTokenProgram,
+      quote: poolQuote(baseInfo.data.readBigUInt64LE(64), quoteInfo.data.readBigUInt64LE(64)),
+    };
+  }
+
+  /**
+   * Same rotation problem as the bonding curve: the AMM keeps eight protocol fee
+   * recipients and eight buyback recipients, and a stale pick is rejected outright.
+   */
+  private async sendWithSwapRecipients(
+    build: (
+      protocolFeeRecipient: PublicKey,
+      buybackFeeRecipient: PublicKey,
+    ) => ReturnType<typeof buildSwapBuyInstruction>[],
+    label: string,
+  ): Promise<TradeResult> {
+    const config = await this.getSwapConfig();
+    const recipients = swapFeeRecipientCandidates(config);
+    const buybacks = config.buybackFeeRecipients;
+    const attempts = Math.min(Math.max(recipients.length, buybacks.length), 8);
+    let lastError: Error | null = null;
+
+    for (let i = 0; i < attempts; i++) {
+      const instructions = build(
+        recipients[i % recipients.length],
+        buybacks[i % buybacks.length],
+      );
+      try {
+        return await this.sendAndConfirm(instructions, label);
+      } catch (err) {
+        lastError = err as Error;
+        // Two ways the AMM says "not that one": a stale buyback recipient and a
+        // protocol recipient it no longer accepts. Both mean try the next pair.
+        if (
+          !lastError.message.includes('NotAuthorized') &&
+          !lastError.message.includes('InvalidProtocolFeeRecipient')
+        ) {
+          throw lastError;
+        }
+      }
+    }
+    throw lastError ?? new Error(`${label}: no authorized fee recipient`);
+  }
+
+  async buySwap(
+    pool: SwapPool,
+    baseTokenProgram: PublicKey,
+    quote: CurveQuote,
+    solAmount: number,
+  ): Promise<{ result: TradeResult | null; tokenAmount: bigint; solSpent: number }> {
+    if (pool.isCashbackCoin) throw new Error('cashback coin — this bot cannot sell it');
+    if (pool.isMayhemMode) throw new Error('mayhem mode coin — not supported');
+
+    const solIn = solToLamports(solAmount);
+    const tokens = tokensForSol(quote, solIn);
+    if (tokens <= 0n) throw new Error('pool returned zero tokens');
+    const expectedCost = solCostForTokens(quote, tokens);
+    const maxQuoteIn = (solIn * BigInt(10_000 + this.config.slippageBps)) / 10_000n;
+
+    await this.getSwapConfig().catch(() => null);
+    const withFee = (expectedCost * BigInt(10_000 + this.swapFeeBpsValue)) / 10_000n;
+    if (this.config.dryRun) {
+      return { result: null, tokenAmount: tokens, solSpent: lamportsToSol(withFee) };
+    }
+
+    const result = await this.sendWithSwapRecipients(
+      (protocolFeeRecipient, buybackFeeRecipient) => [
+        // Wrap the slippage cap rather than the quote: the program pulls what the
+        // trade actually costs and the unwrap at the end returns the difference.
+        ...buildWrapSolInstructions(this.wallet.publicKey, maxQuoteIn),
+        createAtaIdempotentInstruction(
+          this.wallet.publicKey,
+          this.wallet.publicKey,
+          pool.baseMint,
+          baseTokenProgram,
+        ),
+        buildSwapBuyInstruction(
+          {
+            pool,
+            user: this.wallet.publicKey,
+            baseTokenProgram,
+            protocolFeeRecipient,
+            buybackFeeRecipient,
+          },
+          tokens,
+          maxQuoteIn,
+        ),
+        // In the same transaction on purpose: an unwrap that could fail separately
+        // would leave the wallet's SOL sitting in a token account.
+        buildUnwrapSolInstruction(this.wallet.publicKey),
+      ],
+      'AMM buy',
+    );
+
+    return { result, tokenAmount: tokens, solSpent: lamportsToSol(withFee) };
+  }
+
+  async sellSwap(
+    pool: SwapPool,
+    baseTokenProgram: PublicKey,
+    quote: CurveQuote,
+    tokenAmount: bigint,
+  ): Promise<{ result: TradeResult | null; solOut: number; rentReclaimed: boolean }> {
+    const gross = solForTokens(quote, tokenAmount);
+    const net = (gross * BigInt(10_000 - this.swapFeeBpsValue)) / 10_000n;
+
+    if (this.config.dryRun) {
+      await this.getSwapConfig().catch(() => null);
+      return { result: null, solOut: lamportsToSol(net), rentReclaimed: false };
+    }
+
+    const held = await this.getTokenBalance(pool.baseMint, baseTokenProgram);
+    if (held <= 0n) throw new Error('no tokens held to sell');
+
+    const expected = solForTokens(quote, held);
+    const minQuoteOut = (expected * BigInt(10_000 - this.config.slippageBps)) / 10_000n;
+
+    const result = await this.sendWithSwapRecipients(
+      (protocolFeeRecipient, buybackFeeRecipient) => [
+        // Created empty: the AMM pays the proceeds into this account, and the close
+        // at the end is what turns them back into spendable SOL.
+        ...buildWrapSolInstructions(this.wallet.publicKey, 0n),
+        buildSwapSellInstruction(
+          {
+            pool,
+            user: this.wallet.publicKey,
+            baseTokenProgram,
+            protocolFeeRecipient,
+            buybackFeeRecipient,
+          },
+          held,
+          minQuoteOut,
+        ),
+        buildUnwrapSolInstruction(this.wallet.publicKey),
+      ],
+      'AMM sell',
+    );
+
+    const rentReclaimed = await this.closeTokenAccount(pool.baseMint, baseTokenProgram);
+    return { result, solOut: lamportsToSol(net), rentReclaimed };
   }
 
   async getBalanceSol(): Promise<number> {

@@ -2,6 +2,7 @@ import { Connection, PublicKey } from '@solana/web3.js';
 import { loadConfig, loadKeypair, type Config } from './config.js';
 import { Detector, type DetectedToken } from './detector.js';
 import { Executor } from './executor.js';
+import { GraduateWatcher, type GraduateCandidate } from './graduates.js';
 import { CreatorHistory, evaluate } from './filters.js';
 import { KeywordMemory } from './learning.js';
 import { MomentumTracker } from './momentum.js';
@@ -153,6 +154,11 @@ const momentum = new MomentumTracker(
 );
 
 async function handleToken(token: DetectedToken) {
+  // Graduate mode watches the curve only to learn which tokens have filled it; the
+  // launches themselves are never candidates, so counting them here would report
+  // thousands of "detected" tokens the mode was never going to trade.
+  if (config.entryMode === 'graduate') return;
+
   stats.detected++;
   const mintKey = token.mint.toBase58();
   metrics.start(mintKey);
@@ -201,7 +207,6 @@ async function handleToken(token: DetectedToken) {
     rememberToken(token);
     return;
   }
-
   await enterPosition(token);
 }
 
@@ -282,6 +287,7 @@ async function enterPosition(token: DetectedToken) {
       pnlPct: 0,
       openedAt: Date.now(),
       status: 'open',
+      venue: 'pump',
       buySignature: result?.signature,
       history: [0],
       progressPct: 0,
@@ -320,12 +326,138 @@ async function enterPosition(token: DetectedToken) {
   }
 }
 
+/**
+ * Entry on the AMM, after a token has already graduated.
+ *
+ * Nothing here is a race, which is the entire reason it exists: the pool is minutes
+ * old by the time it qualifies, so a slow public RPC costs nothing. The price is read
+ * fresh from the pool for the same reason momentum reads the curve — a candidate
+ * qualifies because it moved, so quoting it from the graduation event would book a
+ * fictional entry against a real exit.
+ */
+async function enterGraduate(candidate: GraduateCandidate) {
+  const mintKey = candidate.mint.toBase58();
+  const symbol = mintKey.slice(0, 4);
+  metrics.start(mintKey);
+  stats.detected++;
+
+  const blocker = canBuy(mintKey);
+  if (blocker) {
+    metrics.finish(mintKey, 'rejected', blocker);
+    return;
+  }
+  stats.passed++;
+
+  try {
+    // Dry run waits and re-reads for the same reason the snipe path does: a real
+    // transaction lands a second or two after the decision, and filling at the price
+    // that triggered the entry reports gains the wallet would never have seen.
+    if (config.dryRun && config.dryRunFillDelayMs > 0) {
+      await new Promise((r) => setTimeout(r, config.dryRunFillDelayMs));
+    }
+    const state = await executor.getSwapPool(candidate.mint);
+    if (!state) {
+      stats.errors++;
+      log(`skipping ${symbol}: pool could not be read`);
+      metrics.finish(mintKey, 'rejected', 'pool unreadable');
+      return;
+    }
+    metrics.mark(mintKey, 'quote');
+
+    log(
+      `buying graduated ${symbol} for ${config.buyAmountSol} SOL ` +
+        `(${candidate.liquiditySol.toFixed(1)} SOL pool, ${candidate.buys} buys)`,
+    );
+
+    metrics.mark(mintKey, 'build');
+    const { result, tokenAmount, solSpent } = await executor.buySwap(
+      state.pool,
+      state.baseTokenProgram,
+      state.quote,
+      config.buyAmountSol,
+    );
+    metrics.mark(mintKey, 'submit');
+
+    spentTodaySol += solSpent;
+    feesTodaySol += estimatedFeeSol();
+    stats.bought++;
+
+    positions.registerSwapPool(mintKey, state.pool, state.baseTokenProgram);
+    positions.add({
+      mint: mintKey,
+      name: `graduated ${symbol}`,
+      symbol,
+      creator: state.pool.coinCreator.toBase58(),
+      tokenProgram: state.baseTokenProgram.toBase58(),
+      tokenAmount,
+      entrySol: solSpent,
+      currentSol: solSpent,
+      peakSol: solSpent,
+      pnlPct: 0,
+      openedAt: Date.now(),
+      status: 'open',
+      venue: 'pumpswap',
+      buySignature: result?.signature,
+      history: [0],
+      // A graduated token is past the curve by definition; there is nothing left to fill.
+      progressPct: 100,
+      marketCapSol: 0,
+    });
+    // Keeps the pool mapped after the candidate is evicted, so the AMM stream can go
+    // on pricing the position for its stop-loss.
+    graduates.track(candidate.pool, candidate.mint);
+
+    pushFeed({
+      mint: mintKey,
+      name: `graduated ${symbol}`,
+      symbol,
+      creator: state.pool.coinCreator.toBase58(),
+      at: Date.now(),
+      verdict: 'sniped',
+    });
+    metrics.finish(mintKey, 'bought');
+    log(config.dryRun ? `DRY RUN: would have bought ${symbol}` : `bought ${symbol} — ${result?.signature}`);
+  } catch (err) {
+    stats.errors++;
+    const reason = (err as Error).message;
+    metrics.finish(mintKey, 'failed', reason.slice(0, 60));
+    log(`AMM buy failed for ${symbol}: ${reason}`);
+    pushFeed({
+      mint: mintKey,
+      name: `graduated ${symbol}`,
+      symbol,
+      creator: '',
+      at: Date.now(),
+      verdict: 'error',
+      reason,
+    });
+  }
+}
+
+const graduates = new GraduateWatcher(
+  config.streamEndpoints,
+  {
+    minLiquiditySol: config.graduateMinLiquiditySol,
+    minBuys: config.graduateMinBuys,
+    minAgeSeconds: config.graduateMinAgeSeconds,
+    maxAgeSeconds: config.graduateMaxAgeSeconds,
+    minBuyRatio: config.graduateMinBuyRatio,
+  },
+  (candidate) => void enterGraduate(candidate),
+  (trade, baseMint) => positions.onSwapTrade(trade, baseMint),
+  (message) => log(message),
+);
+
 const detector = new Detector(
   config.streamEndpoints,
   (token) => void handleToken(token),
   (trade) => {
     positions.onTrade(trade);
     if (config.entryMode === 'momentum') momentum.onTrade(trade);
+    // An emptied curve is a graduation: the token is on its way to the AMM.
+    if (config.entryMode === 'graduate' && trade.realTokenReserves === 0n) {
+      graduates.noteCurveComplete(trade.mint);
+    }
     if (config.entryMode === 'copy') {
       wallets.record(trade);
       // Follow a buy only from a wallet with a record, and only into a launch we saw.
@@ -390,7 +522,10 @@ const getState = (): DashboardState => ({
   feed,
   logs,
   stats: { ...stats, missed: detector.counters.undecodable },
+  // The curve stream is the one every mode depends on; graduate mode runs a second
+  // one against the AMM, reported alongside rather than in place of it.
   stream: detector.health(),
+  graduates: config.entryMode === 'graduate' ? graduates.health() : null,
 });
 
 const EDITABLE_NUMERIC = new Set([
@@ -448,6 +583,9 @@ async function main() {
     momentum: `momentum (wait for ${config.momentumMinLiquiditySol} SOL liquidity and ${config.momentumMinBuys} buys)`,
     copy: `copy (follow wallets with ${config.copyMinRealisedSol}+ SOL over ${config.copyMinClosed}+ trades)`,
     snipe: 'snipe (buy at launch)',
+    graduate:
+      `graduate (AMM pools ${config.graduateMinAgeSeconds}s+ past graduation with ` +
+      `${config.graduateMinLiquiditySol}+ SOL and ${config.graduateMinBuys}+ buys)`,
   }[config.entryMode];
   console.log('  entry:  ', entryDescription);
   if (!config.dryRun) {
@@ -461,6 +599,9 @@ async function main() {
   log(`started in ${config.dryRun ? 'dry-run' : 'live'} mode — press ARM in the dashboard to begin`);
 
   detector.start();
+  // Graduate mode needs both streams: the curve says which tokens have graduated, and
+  // the AMM says what is happening to them afterwards. Neither alone is enough.
+  if (config.entryMode === 'graduate') graduates.start();
   positions.startExitPolling(config.exitPollMs);
   setInterval(() => void refreshBalance(), 30_000);
   setInterval(() => void executor.refreshBlockhash(), 10_000);
@@ -470,6 +611,7 @@ async function main() {
 const shutdown = async () => {
   log('shutting down — open positions are left untouched');
   await detector.stop();
+  await graduates.stop();
   process.exit(0);
 };
 
