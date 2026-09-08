@@ -17,6 +17,7 @@ export interface DashboardState {
   positions: unknown[];
   performance: unknown;
   learning: unknown;
+  outcomes: unknown;
   wallets: unknown;
   metrics: unknown;
   risk: unknown;

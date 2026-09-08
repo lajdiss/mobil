@@ -12,7 +12,7 @@
     "test:crowd": "tsx src/selftest-crowd.ts",
     "test:selection": "tsx src/selftest-selection.ts",
     "test:routing": "tsx src/selftest-routing.ts",
-    "test": "npm run -s test:filters && npm run -s test:exits && npm run -s test:crowd && npm run -s test:selection && npm run -s test:routing",
+    "test": "npm run -s test:filters && npm run -s test:exits && npm run -s test:crowd && npm run -s test:selection && npm run -s test:routing && npm run -s test:memory && npm run -s test:fills",
     "replay": "tsx src/replay.ts",
     "replay:entry": "tsx src/replay-entry.ts",
     "replay:split": "tsx src/replay-split.ts",
@@ -20,7 +20,9 @@
     "replay:signals": "tsx src/replay-signals.ts",
     "replay:activity": "tsx src/replay-activity.ts",
     "replay:momentum": "tsx src/replay-momentum.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:memory": "tsx src/selftest-memory.ts",
+    "test:fills": "tsx src/selftest-fills.ts"
   },
   "dependencies": {
     "@solana/web3.js": "^1.98.0",

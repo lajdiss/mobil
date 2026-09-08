@@ -113,6 +113,9 @@ export interface Config {
   learningMinTrades: number;
   learningMinScore: number;
   learningPath: string;
+  memoryPath: string;
+  memoryMinTrades: number;
+  memoryShrinkage: number;
   copyMinClosed: number;
   copyMinRealisedSol: number;
   copyMinWinRate: number;
@@ -288,6 +291,12 @@ export function loadConfig(): Config {
     learningMinTrades: num('LEARNING_MIN_TRADES', 200),
     learningMinScore: num('LEARNING_MIN_SCORE', -100),
     learningPath: process.env.LEARNING_PATH || 'data/keyword-memory.json',
+    // Outcome memory learns which entry conditions paid, rather than which names did.
+    // It stays silent — and the queue keeps ranking on raw activity — until it has
+    // this many closed trades, because a handful of them says nothing.
+    memoryPath: process.env.MEMORY_PATH || 'data/outcome-memory.json',
+    memoryMinTrades: num('MEMORY_MIN_TRADES', 60),
+    memoryShrinkage: num('MEMORY_SHRINKAGE', 12),
     // What a wallet must have shown on the curve before the bot follows its buys.
     copyMinClosed: num('COPY_MIN_CLOSED', 10),
     copyMinRealisedSol: num('COPY_MIN_REALISED_SOL', 1),

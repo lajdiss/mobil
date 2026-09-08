@@ -4,6 +4,7 @@ import { Executor, lamportsToSol } from './executor.js';
 import { solForTokens, type CurveQuote, type TradeUpdate } from './pump.js';
 import { poolQuote, type SwapPool, type SwapTrade } from './pumpswap.js';
 import type { PathRecorder } from './recorder.js';
+import type { EntryFeatures } from './memory.js';
 
 export type PositionStatus = 'open' | 'closing' | 'closed' | 'failed';
 export type ExitReason =
@@ -57,6 +58,11 @@ export interface Position {
   /** How far the bonding curve has filled toward graduation, 0-100. */
   progressPct: number;
   marketCapSol: number;
+  /**
+   * The crowd reading at the moment of entry, kept so the outcome can be attributed
+   * back to the conditions that produced it once the position closes.
+   */
+  entryFeatures?: EntryFeatures;
 }
 
 /** Tokens left in the curve at launch; what remains measures progress to graduation. */

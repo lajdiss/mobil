@@ -182,7 +182,28 @@ const tokensForSol = (vt: bigint, vq: bigint, sol: bigint) =>
 export const REPLAY_BUY_LAMPORTS = 50_000_000n;
 
 /**
- * The path a buyer entering `delaySeconds` after the launch would have seen.
+ * How long after the decision the fill actually lands.
+ *
+ * The decision is made from a price, and then a quote is fetched, an instruction is
+ * built, a transaction is submitted and confirmed. None of that is free, and on a
+ * token moving tens of percent inside twenty seconds the difference between the
+ * trigger price and the fill price is the entire result.
+ *
+ * This defaults to the same 1.5s the exit side pays, and for the same reason: filling
+ * at the trigger tick made a strategy with no edge at realistic latency measure at 68%
+ * win rate and +11.8% expectancy. The exit-side version of that bug was found and
+ * fixed earlier; this is the entry-side one, and it was inflating every result here
+ * that entered on a moving price.
+ */
+export const REPLAY_ENTRY_DELAY_SECONDS = Number(process.env.REPLAY_ENTRY_DELAY ?? 1.5);
+
+/**
+ * The path a buyer deciding `delaySeconds` after the launch would have got.
+ *
+ * The decision happens at `delaySeconds`; the fill happens `fillDelaySeconds` later,
+ * at whatever price exists by then. Features measured up to the decision point stay
+ * valid — nothing here looks past it — but the entry price is the one a buyer would
+ * really have paid.
  *
  * Returns null when the recording does not reach that far, rather than entering at the
  * last sample it has — scoring a delay against a launch that ended before it would
@@ -191,8 +212,11 @@ export const REPLAY_BUY_LAMPORTS = 50_000_000n;
 export function entryPathFromLaunch(
   launch: RecordedLaunch,
   delaySeconds: number,
+  fillDelaySeconds: number = REPLAY_ENTRY_DELAY_SECONDS,
 ): RecordedPath | null {
-  const entryIndex = launch.samples.findIndex((s) => s.t >= delaySeconds * 1000);
+  const entryIndex = launch.samples.findIndex(
+    (s) => s.t >= (delaySeconds + fillDelaySeconds) * 1000,
+  );
   if (entryIndex === -1) return null;
   const after = launch.samples.slice(entryIndex);
   // One sample is a price, not a path; there is nothing for an exit rule to act on.

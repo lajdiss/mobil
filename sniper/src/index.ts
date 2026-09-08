@@ -9,6 +9,7 @@ import { graduatedPoolPda } from './pumpswap.js';
 import { TrendingScanner, type TrendingCandidate } from './trending.js';
 import { CreatorHistory, evaluate } from './filters.js';
 import { KeywordMemory } from './learning.js';
+import { OutcomeMemory, type EntryFeatures } from './memory.js';
 import { ConsensusTracker } from './consensus.js';
 import { MomentumTracker } from './momentum.js';
 import { LaunchRecorder } from './launches.js';
@@ -31,6 +32,15 @@ const metrics = new Metrics();
 const executor = new Executor(connection, wallet, config, metrics);
 const history = new CreatorHistory();
 const memory = new KeywordMemory(config.learningPath);
+/**
+ * What conditions at entry have actually paid. Unlike the keyword memory this survives
+ * the token: it is about the crowd, not the name, so what it learns transfers to the
+ * next token entirely.
+ */
+const outcomes = new OutcomeMemory(config.memoryPath, {
+  minTrades: config.memoryMinTrades,
+  shrinkageStrength: config.memoryShrinkage,
+});
 const wallets = new WalletTracker(config.walletPath);
 
 /**
@@ -111,6 +121,13 @@ const positions = new PositionManager(
 
     const pnlPct = ((position.exitSol - position.entrySol) / position.entrySol) * 100;
     if (config.learningEnabled) memory.record(position.name, position.symbol, pnlPct);
+    // Recorded whatever the entry mode: the conditions are what is being learned, and a
+    // position opened without a reading teaches nothing, so it is skipped rather than
+    // recorded as if its features were zero.
+    if (position.entryFeatures) {
+      outcomes.record(position.entryFeatures, pnlPct);
+      outcomes.save();
+    }
 
     // A streak of losses is usually the market turning, not a setting to tweak.
     if (pnlPct > 0) {
@@ -185,6 +202,21 @@ const momentum = new MomentumTracker(
  * Candidates wait here and the busiest goes first. Without it the bot enters whatever
  * clears the floor soonest, which is not the same thing as the best one available.
  */
+/**
+ * The reading that gets attributed the outcome. Taken at entry rather than at detection,
+ * because that is the moment the decision is actually made.
+ */
+function entryFeaturesFor(mint: string): EntryFeatures | undefined {
+  const crowd = attention.crowd(mint, config.crowdWindowSeconds);
+  const stats = attention.stats(mint);
+  if (!crowd && !stats) return undefined;
+  return {
+    tradeRate: crowd?.tradeRate,
+    runUpPct: crowd?.runUpPct,
+    uniqueBuyers: stats?.uniqueBuyers,
+  };
+}
+
 const entryQueue = new EntryQueue<DetectedToken>(
   {
     windowSeconds: Math.max(1, config.selectionWindowSeconds),
@@ -195,6 +227,7 @@ const entryQueue = new EntryQueue<DetectedToken>(
   config.crowdWindowSeconds,
   (token) => void enterPosition(token),
   () => positions.openCount() < config.maxOpenPositions,
+  outcomes,
 );
 
 const consensus = new ConsensusTracker(
@@ -489,6 +522,7 @@ async function enterPosition(token: DetectedToken) {
       history: [0],
       progressPct: 0,
       marketCapSol: 0,
+      entryFeatures: entryFeaturesFor(mintKey),
     };
     positions.add(position);
 
@@ -603,6 +637,7 @@ async function enterGraduate(candidate: GraduateCandidate) {
       // A graduated token is past the curve by definition; there is nothing left to fill.
       progressPct: 100,
       marketCapSol: 0,
+      entryFeatures: entryFeaturesFor(mintKey),
     });
     // Keeps the pool mapped after the candidate is evicted, so the AMM stream can go
     // on pricing the position for its stop-loss.
@@ -712,6 +747,7 @@ async function enterTrending(candidate: TrendingCandidate) {
         history: [0],
         progressPct: 100,
         marketCapSol: candidate.hype.marketCapSol,
+        entryFeatures: entryFeaturesFor(mintKey),
       });
       graduates.track(state.pool.address, candidate.mint);
       metrics.finish(mintKey, 'bought');
@@ -774,6 +810,7 @@ async function enterTrending(candidate: TrendingCandidate) {
         history: [0],
         progressPct: 0,
         marketCapSol: candidate.hype.marketCapSol,
+        entryFeatures: entryFeaturesFor(mintKey),
       });
       metrics.finish(mintKey, 'bought');
       log(config.dryRun ? `DRY RUN: would have bought ${symbol}` : `bought ${symbol} — ${result?.signature}`);
@@ -933,6 +970,7 @@ const getState = (): DashboardState => ({
   })),
   performance: positions.performance(),
   learning: memory.stats(),
+  outcomes: outcomes.stats(),
   metrics: metrics.snapshot(),
   risk: {
     consecutiveLosses,

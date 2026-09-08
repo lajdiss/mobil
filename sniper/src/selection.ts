@@ -1,4 +1,11 @@
 import type { AttentionTracker } from './attention.js';
+import type { EntryFeatures } from './memory.js';
+
+/** What the queue needs from the outcome memory; kept narrow so tests can fake it. */
+export interface RankingMemory {
+  readonly warm: boolean;
+  score(features: EntryFeatures): number | null;
+}
 
 /**
  * Picks the best candidate instead of the first acceptable one.
@@ -42,6 +49,8 @@ export class EntryQueue<T> {
     private readonly scoreWindowSeconds: number,
     private readonly onRelease: (token: T) => void,
     private readonly canRelease: () => boolean,
+    /** Once warm, candidates are ranked by what conditions like theirs have paid. */
+    private readonly memory?: RankingMemory,
   ) {}
 
   start() {
@@ -69,17 +78,38 @@ export class EntryQueue<T> {
     return { ...this.counters, waiting: this.waiting.size };
   }
 
+  /** The crowd reading a candidate is judged on, taken at selection time. */
+  features(mint: string): EntryFeatures {
+    const crowd = this.attention.crowd(mint, this.scoreWindowSeconds);
+    const stats = this.attention.stats(mint);
+    return {
+      // Falling back to the lifetime rate rather than to zero: an unknown token should
+      // rank below a busy one, not below a dead one.
+      tradeRate: crowd
+        ? crowd.tradeRate
+        : stats
+          ? (stats.buys + stats.sells) / Math.max(1, stats.ageSeconds)
+          : 0,
+      runUpPct: crowd?.runUpPct,
+      uniqueBuyers: stats?.uniqueBuyers,
+    };
+  }
+
   /**
    * Scores at selection time, not at insertion. A token's activity keeps changing
    * while it waits, and the whole point is to compare candidates as they are now.
+   *
+   * `useMemory` is decided once per round rather than per candidate: expected percent
+   * and trades per second are different units, and ranking half a field by one and
+   * half by the other would order them by which happened to be available.
    */
-  private score(mint: string): number {
-    const crowd = this.attention.crowd(mint, this.scoreWindowSeconds);
-    if (crowd) return crowd.tradeRate;
-    const stats = this.attention.stats(mint);
-    // Falling back to the lifetime count rather than to zero: an unknown token should
-    // rank below a busy one, not below a dead one.
-    return stats ? (stats.buys + stats.sells) / Math.max(1, stats.ageSeconds) : 0;
+  private score(mint: string, useMemory: boolean): number {
+    const features = this.features(mint);
+    if (useMemory) {
+      const learned = this.memory?.score(features);
+      if (learned !== null && learned !== undefined) return learned;
+    }
+    return features.tradeRate ?? 0;
   }
 
   private round() {
@@ -92,8 +122,9 @@ export class EntryQueue<T> {
     }
     if (this.waiting.size === 0) return;
 
+    const useMemory = this.memory?.warm === true;
     const ranked = [...this.waiting.values()]
-      .map((candidate) => ({ candidate, score: this.score(candidate.mint) }))
+      .map((candidate) => ({ candidate, score: this.score(candidate.mint, useMemory) }))
       .sort((a, b) => b.score - a.score);
 
     for (const { candidate } of ranked.slice(0, this.config.perRound)) {
