@@ -243,9 +243,10 @@ export class PositionManager {
       this.config.exitOnCreatorSell &&
       !trade.isBuy &&
       position.status === 'open' &&
-      trade.user.toBase58() === position.creator
+      trade.user.toBase58() === position.creator &&
+      this.isMaterialSell(trade)
     ) {
-      this.onLog(`${position.symbol}: creator is selling — exiting now`);
+      this.onLog(`${position.symbol}: creator is dumping — exiting now`);
       void this.close(mint, 'dev-sold', trade);
       return;
     }
@@ -393,6 +394,12 @@ export class PositionManager {
         position.entrySol > 0
           ? ((position.exitSol - position.entrySol) / position.entrySol) * 100
           : 0;
+      // The last price sample is not the fill. A stop fires on a sample and the sale
+      // lands after it, so leaving pnlPct at the trigger value makes the dashboard
+      // disagree with the wallet — reported as +0.65% on a trade that returned -10%.
+      position.currentSol = position.exitSol;
+      position.pnlPct = exitPct;
+      position.history.push(exitPct);
       if (reason === 'stop-loss') {
         // Negative means the exit landed further underwater than the stop-loss allowed.
         position.overshootPct = exitPct + this.config.stopLossPct;
@@ -429,6 +436,18 @@ export class PositionManager {
     }
 
     this.onChange(position);
+  }
+
+  /**
+   * A creator taking a little off the table is not a rug, and treating it as one
+   * exits good positions for nothing. Measured against the pool rather than in SOL so
+   * the threshold means the same thing on a thin curve and a deep one: what matters is
+   * whether the sale moves the price, not how many lamports it was.
+   */
+  private isMaterialSell(trade: TradeUpdate): boolean {
+    if (trade.virtualQuoteReserves <= 0n) return false;
+    const shareBps = Number((trade.solAmount * 10_000n) / trade.virtualQuoteReserves);
+    return shareBps >= this.config.creatorSellMinBps;
   }
 
   private shouldTakePartial(position: Position): boolean {

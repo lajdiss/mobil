@@ -61,6 +61,7 @@ export interface Config {
   partialSellPct: number;
   breakEvenAfterPartial: boolean;
   exitOnCreatorSell: boolean;
+  creatorSellMinBps: number;
   stopLossPct: number;
   trailingStopPct: number;
   maxHoldSeconds: number;
@@ -152,6 +153,10 @@ export function loadConfig(): Config {
     // The creator dumping their own supply is the clearest rug signal there is, and it
     // arrives free in the same event stream that prices the position.
     exitOnCreatorSell: bool('EXIT_ON_CREATOR_SELL', true),
+    // How big a creator's sale has to be, as a share of the pool, before it counts as
+    // a dump rather than pocket money. 50bps of liquidity is roughly where a sale
+    // starts to move the price at all.
+    creatorSellMinBps: num('CREATOR_SELL_MIN_BPS', 50),
     stopLossPct: num('STOP_LOSS_PCT', 30),
     trailingStopPct: num('TRAILING_STOP_PCT', 0),
     maxHoldSeconds: num('MAX_HOLD_SECONDS', 300),

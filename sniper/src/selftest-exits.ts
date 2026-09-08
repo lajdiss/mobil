@@ -116,7 +116,7 @@ console.log(ok ? '\nPASS' : '\nFAIL');
  * position, several samples before the stop-loss would notice the damage. This checks
  * the bot acts on the seller's identity rather than waiting for the price.
  */
-async function creatorSellScenario(exitOnCreatorSell: boolean) {
+async function creatorSellScenario(exitOnCreatorSell: boolean, sellSol: number) {
   let priceQuote = quoteAt(1000);
   const executor = {
     feeBps: 100,
@@ -133,7 +133,7 @@ async function creatorSellScenario(exitOnCreatorSell: boolean) {
   const config = {
     takeProfitPct: 100, stopLossPct: 30, trailingStopPct: 0, maxHoldSeconds: 99999,
     partialTakeProfitPct: 0, partialSellPct: 50, breakEvenAfterPartial: true,
-    exitOnCreatorSell, dryRun: true,
+    exitOnCreatorSell, creatorSellMinBps: 50, dryRun: true,
   } as unknown as Config;
 
   const pm = new PositionManager(executor, config, () => {}, () => {});
@@ -155,7 +155,7 @@ async function creatorSellScenario(exitOnCreatorSell: boolean) {
     mint: new PublicKey(MINT),
     user: new PublicKey(CREATOR),
     isBuy: false,
-    solAmount: 0n,
+    solAmount: BigInt(Math.round(sellSol * 1e9)),
     tokenAmount: 0n,
     virtualTokenReserves: priceQuote.virtualTokenReserves,
     virtualQuoteReserves: priceQuote.virtualQuoteReserves,
@@ -168,17 +168,23 @@ async function creatorSellScenario(exitOnCreatorSell: boolean) {
   return { position, pct };
 }
 
-const ignored = await creatorSellScenario(false);
-const acted = await creatorSellScenario(true);
+// 50 SOL out of a 950 SOL pool is 526bps — a dump. 1 SOL is 10bps — pocket money.
+const ignored = await creatorSellScenario(false, 50);
+const acted = await creatorSellScenario(true, 50);
+const dust = await creatorSellScenario(true, 1);
 
-console.log('\ncreator sells at -5%:');
-console.log('  EXIT_ON_CREATOR_SELL=false ->', ignored.position.status, ignored.position.exitReason ?? '(still holding)');
-console.log('  EXIT_ON_CREATOR_SELL=true  ->', acted.position.status, acted.position.exitReason, acted.pct.toFixed(2) + '%');
+console.log('\ncreator sells while the price is barely moved:');
+console.log('  rule off, 50 SOL dump ->', ignored.position.status, ignored.position.exitReason ?? '(still holding)');
+console.log('  rule on,  50 SOL dump ->', acted.position.status, acted.position.exitReason, acted.pct.toFixed(2) + '%');
+console.log('  rule on,  1 SOL trim  ->', dust.position.status, dust.position.exitReason ?? '(still holding, correctly)');
 
 const devOk =
   ignored.position.status === 'open' &&
   acted.position.status === 'closed' &&
-  acted.position.exitReason === 'dev-sold';
+  acted.position.exitReason === 'dev-sold' &&
+  // A creator taking a little off the table is not a rug; exiting on it would give up
+  // good positions for nothing.
+  dust.position.status === 'open';
 console.log(devOk ? 'PASS' : 'FAIL');
 
 process.exit(ok && devOk ? 0 : 1);
