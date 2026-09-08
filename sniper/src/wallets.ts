@@ -5,6 +5,8 @@ import type { TradeUpdate } from './pump.js';
 interface OpenLot {
   tokens: bigint;
   solIn: number;
+  /** When the wallet first bought into this token, for measuring how long it holds. */
+  openedAt: number;
 }
 
 interface WalletStat {
@@ -13,6 +15,12 @@ interface WalletStat {
   closed: number;
   wins: number;
   lastSeen: number;
+  /**
+   * Total and count of holding periods, so the average survives a reload without
+   * storing every trade. Optional: files written before this existed have neither.
+   */
+  holdMsSum?: number;
+  holdCount?: number;
 }
 
 interface Snapshot {
@@ -82,7 +90,7 @@ export class WalletTracker {
     }
 
     if (trade.isBuy) {
-      const lot = lots.get(mint) ?? { tokens: 0n, solIn: 0 };
+      const lot = lots.get(mint) ?? { tokens: 0n, solIn: 0, openedAt: Date.now() };
       lot.tokens += trade.tokenAmount;
       lot.solIn += sol;
       lots.set(mint, lot);
@@ -108,6 +116,13 @@ export class WalletTracker {
     stat.closed++;
     if (profit > 0) stat.wins++;
     stat.lastSeen = Date.now();
+    // How long this wallet actually held. Every exit setting in this bot has so far
+    // been a guess; wallets with thousands of profitable closes are the one source of
+    // an answer that is not a guess.
+    if (lot.openedAt) {
+      stat.holdMsSum = (stat.holdMsSum ?? 0) + (Date.now() - lot.openedAt);
+      stat.holdCount = (stat.holdCount ?? 0) + 1;
+    }
     this.stats.set(wallet, stat);
 
     if (this.stats.size > MAX_TRACKED) this.prune();
@@ -120,6 +135,35 @@ export class WalletTracker {
     for (const wallet of this.open.keys()) {
       if (!this.stats.has(wallet)) this.open.delete(wallet);
     }
+  }
+
+  /**
+   * How long wallets hold, split by whether they actually make money.
+   *
+   * Every exit setting in this bot started as a guess. These wallets did not guess —
+   * the profitable ones have thousands of closed round trips behind their average, and
+   * whatever holding period they converged on is an answer drawn from the market
+   * rather than from a default. If the winners hold for a minute and the losers hold
+   * for ten, that is worth more than any parameter sweep.
+   */
+  holdingProfile(minClosed: number) {
+    const winners: number[] = [];
+    const losers: number[] = [];
+    for (const stat of this.stats.values()) {
+      if (stat.closed < minClosed || !stat.holdCount) continue;
+      const avgSeconds = stat.holdMsSum! / stat.holdCount / 1000;
+      (stat.realisedSol > 0 ? winners : losers).push(avgSeconds);
+    }
+    const median = (xs: number[]) => {
+      if (xs.length === 0) return null;
+      const sorted = [...xs].sort((a, b) => a - b);
+      const mid = Math.floor(sorted.length / 2);
+      return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+    };
+    return {
+      winners: { wallets: winners.length, medianHoldSeconds: median(winners) },
+      losers: { wallets: losers.length, medianHoldSeconds: median(losers) },
+    };
   }
 
   /** True when this wallet has enough of a record to be worth following. */

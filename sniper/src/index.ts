@@ -583,6 +583,7 @@ const getState = (): DashboardState => ({
   wallets: {
     ...wallets.summary(config.copyMinClosed, config.copyMinRealisedSol, config.copyMinWinRate),
     top: wallets.leaderboard(config.copyMinClosed, 6),
+    holding: wallets.holdingProfile(config.copyMinClosed),
   },
   feed,
   logs,
