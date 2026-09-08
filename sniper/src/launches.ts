@@ -27,6 +27,17 @@ export interface LaunchSample {
   t: number;
   vt: string;
   vq: string;
+  /**
+   * Trades since the previous sample, this one included.
+   *
+   * Samples closer together than the write interval are collapsed to keep the files
+   * small, which means sample density understates activity on exactly the tokens where
+   * activity matters — the measured rate saturates and a frantic token looks like a
+   * merely busy one. Trade rate turned out to be the strongest feature found here, so
+   * it is worth counting properly rather than inferring from how often a sample
+   * happened to be written.
+   */
+  n?: number;
 }
 
 export interface RecordedLaunch {
@@ -109,12 +120,17 @@ export class LaunchRecorder {
     if (!record) return;
     const t = Date.now() - record.launchedAt;
     const last = record.samples[record.samples.length - 1];
-    // Finer than this is detail no entry delay or exit rule can act on.
-    if (t - last.t < 250) return;
+    // Collapsed samples still count toward the trade tally, so the rate stays exact
+    // even where the price series is thinned.
+    if (t - last.t < 250) {
+      last.n = (last.n ?? 1) + 1;
+      return;
+    }
     record.samples.push({
       t,
       vt: curve.virtualTokenReserves.toString(),
       vq: curve.virtualQuoteReserves.toString(),
+      n: 1,
     });
   }
 
