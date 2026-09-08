@@ -1,0 +1,160 @@
+/**
+ * Sweeps entry delay against exit rule over recorded launches.
+ *
+ * The exit sweep answered its question and the answer was "nothing helps": with
+ * perfect foresight, selling every recorded path at its own peak, only 3 of 41 tokens
+ * ever traded 2% above the entry — the same 7.3% the best exit rule already reached.
+ * The exits were already at the ceiling. What moved the ceiling was timing: 39% of
+ * those tokens peaked within five seconds of the entry, so the move was over before
+ * the bot bought.
+ *
+ * That makes the entry delay the parameter worth sweeping, and it needs launch-relative
+ * recordings — a path that starts at the entry has no record of what came before it.
+ * Here every (delay, exit) pair is constructed against the same launches, so the two
+ * are separable for the first time.
+ *
+ *   npm run replay:entry -- data/launches.jsonl
+ */
+import { readFileSync } from 'node:fs';
+import type { RecordedLaunch } from './launches.js';
+import type { RecordedPath } from './recorder.js';
+import { rule, simulate, type ExitRule } from './exitrules.js';
+
+const solForTokens = (vt: bigint, vq: bigint, tokens: bigint) =>
+  tokens <= 0n ? 0n : (tokens * vq) / (vt + tokens);
+const tokensForSol = (vt: bigint, vq: bigint, sol: bigint) =>
+  sol <= 0n ? 0n : (sol * vt) / (vq + sol);
+
+const BUY_LAMPORTS = 50_000_000n; // 0.05 SOL, matching the live runs
+
+/**
+ * Turns a launch into the path a buyer entering `delaySeconds` late would have seen.
+ * Returns null when the recording does not reach that far — scoring a delay against a
+ * launch that ended first would quietly bias the result toward long delays.
+ */
+function pathFromLaunch(launch: RecordedLaunch, delaySeconds: number): RecordedPath | null {
+  const delayMs = delaySeconds * 1000;
+  const entryIndex = launch.samples.findIndex((s) => s.t >= delayMs);
+  if (entryIndex === -1) return null;
+  const after = launch.samples.slice(entryIndex);
+  // One sample is a price, not a path; there is nothing for an exit rule to act on.
+  if (after.length < 2) return null;
+
+  const entry = after[0];
+  const vt = BigInt(entry.vt);
+  const vq = BigInt(entry.vq);
+  const feeMultiplier = (1e4 + launch.feeBps) / 1e4;
+  const tokens = tokensForSol(vt, vq, BUY_LAMPORTS);
+  if (tokens <= 0n) return null;
+
+  // What the buy actually costs, fee included — the same basis the live executor books.
+  const costLamports = Number(solForTokens(vt, vq, tokens)) * feeMultiplier;
+
+  return {
+    mint: launch.mint,
+    symbol: launch.symbol,
+    venue: 'pump',
+    openedAt: launch.launchedAt + entry.t,
+    entrySol: costLamports / 1e9,
+    entryTokens: tokens.toString(),
+    feeBps: launch.feeBps,
+    samples: after.map((s) => ({ t: s.t - entry.t, vt: s.vt, vq: s.vq })),
+    creatorSales: launch.creatorSales
+      .filter((c) => c.t >= entry.t)
+      .map((c) => ({ t: c.t - entry.t, bps: c.bps })),
+  };
+}
+
+const median = (xs: number[]) => {
+  if (xs.length === 0) return 0;
+  const sorted = [...xs].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+};
+
+const file = process.argv.slice(2).find((a) => !a.startsWith('--')) ?? 'data/launches.jsonl';
+const launches: RecordedLaunch[] = readFileSync(file, 'utf8')
+  .split('\n')
+  .filter(Boolean)
+  .map((line) => JSON.parse(line) as RecordedLaunch);
+
+if (launches.length === 0) {
+  console.log(`no recorded launches in ${file}`);
+  process.exit(1);
+}
+
+const coverage = launches.map((l) => l.samples[l.samples.length - 1].t / 1000);
+console.log(`${launches.length} recorded launches from ${file}`);
+console.log(
+  `each followed for a median of ${median(coverage).toFixed(0)}s after launch ` +
+    `(longest ${Math.max(...coverage).toFixed(0)}s)\n`,
+);
+
+const DELAYS = [0, 2, 5, 10, 20, 30, 60, 120, 240];
+const EXITS: ExitRule[] = [
+  rule('TP30 / SL20', { takeProfitPct: 30, stopLossPct: 20 }),
+  rule('TP50 / SL30', { takeProfitPct: 50, stopLossPct: 30 }),
+  rule('TP100 / SL30', { takeProfitPct: 100, stopLossPct: 30 }),
+  rule('trail 20%', { takeProfitPct: 1e6, stopLossPct: 50, trailingStopPct: 20 }),
+  rule('hold 60s', { maxHoldSeconds: 60, takeProfitPct: 1e6, stopLossPct: 99 }),
+  rule('buy and hold', { takeProfitPct: 1e6, stopLossPct: 99.9, maxHoldSeconds: 1e6 }),
+];
+
+const pad = (s: string, n: number) => s.padEnd(n);
+const cell = (v: number | null, n: number) => (v === null ? '—' : v.toFixed(1)).padStart(n);
+
+for (const label of ['WIN RATE %', 'EXPECTANCY %'] as const) {
+  console.log(`\n${label}  (rows = seconds waited after launch, columns = exit rule)`);
+  console.log(pad('  wait', 8) + EXITS.map((e) => pad(e.label, 14)).join('') + 'n');
+  console.log('-'.repeat(8 + EXITS.length * 14 + 4));
+  for (const delay of DELAYS) {
+    const paths = launches
+      .map((l) => pathFromLaunch(l, delay))
+      .filter((p): p is RecordedPath => p !== null);
+    if (paths.length === 0) continue;
+    const cells = EXITS.map((exit) => {
+      const outcomes = paths.map((p) => simulate(p, exit));
+      const value =
+        label === 'WIN RATE %'
+          ? (outcomes.filter((o) => o.pct > 0).length / outcomes.length) * 100
+          : outcomes.reduce((a, o) => a + o.pct, 0) / outcomes.length;
+      return cell(value, 8).padEnd(14);
+    });
+    console.log(pad(`  ${delay}s`, 8) + cells.join('') + String(paths.length).padStart(4));
+  }
+}
+
+// The ceiling every exit rule in the table above is competing against.
+console.log('\nPERFECT-FORESIGHT CEILING — sell at the peak, per entry delay');
+console.log(pad('  wait', 8) + 'ever >0%'.padStart(10) + 'ever >2%'.padStart(10) +
+  'median peak'.padStart(13) + '   n');
+for (const delay of DELAYS) {
+  const paths = launches
+    .map((l) => pathFromLaunch(l, delay))
+    .filter((p): p is RecordedPath => p !== null);
+  if (paths.length === 0) continue;
+  const peaks = paths.map((p) => {
+    const tokens = BigInt(p.entryTokens);
+    const fee = (1e4 - p.feeBps) / 1e4;
+    return Math.max(
+      ...p.samples.map(
+        (s) =>
+          (((Number(solForTokens(BigInt(s.vt), BigInt(s.vq), tokens)) / 1e9) * fee - p.entrySol) /
+            p.entrySol) *
+          100,
+      ),
+    );
+  });
+  console.log(
+    pad(`  ${delay}s`, 8) +
+      ((peaks.filter((p) => p > 0).length / peaks.length) * 100).toFixed(1).padStart(9) + '%' +
+      ((peaks.filter((p) => p > 2).length / peaks.length) * 100).toFixed(1).padStart(9) + '%' +
+      median(peaks).toFixed(2).padStart(12) + '%' +
+      String(peaks.length).padStart(4),
+  );
+}
+
+console.log(
+  '\nThe ceiling is what an exit rule cannot beat: a trade is only a win if the price\n' +
+    'traded above the entry at some point. Where the ceiling is low, no exit helps.',
+);

@@ -15,100 +15,7 @@
  */
 import { readFileSync } from 'node:fs';
 import type { RecordedPath } from './recorder.js';
-
-interface ExitRule {
-  label: string;
-  takeProfitPct: number;
-  stopLossPct: number;
-  trailingStopPct: number;
-  maxHoldSeconds: number;
-  partialTakeProfitPct: number;
-  partialSellPct: number;
-  breakEvenAfterPartial: boolean;
-  creatorSellMinBps: number;
-}
-
-interface Outcome {
-  pct: number;
-  reason: string;
-  heldSeconds: number;
-}
-
-/** Constant product, matching the executor. */
-const solForTokens = (vt: bigint, vq: bigint, tokens: bigint) =>
-  tokens <= 0n ? 0n : (tokens * vq) / (vt + tokens);
-
-/**
- * One position, one rule. Walks the recorded samples in order and applies the rule as
- * the live bot would, including the fee on every sale — a scale-out pays it twice, and
- * ignoring that would make partial exits look better than they are.
- */
-function simulate(path: RecordedPath, rule: ExitRule): Outcome {
-  const feeMultiplier = (1e4 - path.feeBps) / 1e4;
-  let tokens = BigInt(path.entryTokens);
-  let realised = 0;
-  let peak = path.entrySol;
-  let partialTaken = false;
-  let stopAtBreakEven = false;
-
-  const valueAt = (s: { vt: string; vq: string }) =>
-    realised + (Number(solForTokens(BigInt(s.vt), BigInt(s.vq), tokens)) / 1e9) * feeMultiplier;
-
-  let nextSale = 0;
-
-  for (const sample of path.samples) {
-    // Creator sales are stored with their own timestamps, so they are applied at the
-    // first sample at or after they happened rather than assumed to land on one.
-    while (nextSale < path.creatorSales.length && path.creatorSales[nextSale].t <= sample.t) {
-      const sale = path.creatorSales[nextSale++];
-      if (rule.creatorSellMinBps > 0 && sale.bps >= rule.creatorSellMinBps) {
-        const value = valueAt(sample);
-        return {
-          pct: ((value - path.entrySol) / path.entrySol) * 100,
-          reason: 'dev-sold',
-          heldSeconds: sample.t / 1000,
-        };
-      }
-    }
-
-    const value = valueAt(sample);
-    peak = Math.max(peak, value);
-    const pnl = ((value - path.entrySol) / path.entrySol) * 100;
-    const done = (reason: string) => ({ pct: pnl, reason, heldSeconds: sample.t / 1000 });
-
-    if (pnl >= rule.takeProfitPct) return done('take-profit');
-    if (pnl <= -rule.stopLossPct) return done('stop-loss');
-    if (stopAtBreakEven && pnl <= 0) return done('break-even');
-    if (rule.trailingStopPct > 0 && peak > path.entrySol) {
-      if (((peak - value) / peak) * 100 >= rule.trailingStopPct) return done('trailing-stop');
-    }
-    if (sample.t / 1000 >= rule.maxHoldSeconds) return done('timeout');
-
-    if (
-      rule.partialTakeProfitPct > 0 &&
-      !partialTaken &&
-      pnl >= rule.partialTakeProfitPct &&
-      pnl < rule.takeProfitPct
-    ) {
-      const sold = (tokens * BigInt(rule.partialSellPct)) / 100n;
-      realised +=
-        (Number(solForTokens(BigInt(sample.vt), BigInt(sample.vq), sold)) / 1e9) * feeMultiplier;
-      tokens -= sold;
-      partialTaken = true;
-      if (rule.breakEvenAfterPartial) stopAtBreakEven = true;
-    }
-  }
-
-  const last = path.samples[path.samples.length - 1];
-  const value = valueAt(last);
-  return {
-    pct: ((value - path.entrySol) / path.entrySol) * 100,
-    // The recording ended before the rule fired; the result is where it stood, and the
-    // label says so rather than pretending a rule closed it.
-    reason: 'path-ended',
-    heldSeconds: last.t / 1000,
-  };
-}
+import { rule, simulate, type ExitRule } from './exitrules.js';
 
 const median = (xs: number[]) => {
   const sorted = [...xs].sort((a, b) => a - b);
@@ -154,19 +61,6 @@ function evaluate(paths: RecordedPath[], rule: ExitRule) {
   };
 }
 
-const rule = (label: string, over: Partial<ExitRule>): ExitRule => ({
-  label,
-  takeProfitPct: 50,
-  stopLossPct: 30,
-  trailingStopPct: 0,
-  maxHoldSeconds: 300,
-  partialTakeProfitPct: 0,
-  partialSellPct: 50,
-  breakEvenAfterPartial: true,
-  creatorSellMinBps: 0,
-  ...over,
-});
-
 function buildGrid(): ExitRule[] {
   const rules: ExitRule[] = [
     rule('buy and hold (no exit)', { takeProfitPct: 1e6, stopLossPct: 99.9, maxHoldSeconds: 1e6 }),
@@ -204,7 +98,11 @@ function buildGrid(): ExitRule[] {
   return rules;
 }
 
-const file = process.argv[2] ?? 'data/paths.jsonl';
+const args = process.argv.slice(2);
+const file = args.find((a) => !a.startsWith('--')) ?? 'data/paths.jsonl';
+// Ranking by win rate answers "which rule wins most often"; ranking by expectancy
+// answers "which rule makes money". They are rarely the same rule, which is the point.
+const sortBy = args.includes('--sort=wr') ? 'wr' : 'exp';
 const paths: RecordedPath[] = readFileSync(file, 'utf8')
   .split('\n')
   .filter(Boolean)
@@ -228,11 +126,12 @@ console.log(
 
 const results = buildGrid()
   .map((r) => evaluate(paths, r))
-  .sort((a, b) => b.expectancy - a.expectancy);
+  .sort((a, b) => (sortBy === 'wr' ? b.winRate - a.winRate : b.expectancy - a.expectancy));
 
 const pad = (s: string, n: number) => s.padEnd(n);
 const num = (v: number, n: number, digits = 1) => v.toFixed(digits).padStart(n);
 
+console.log(`ranked by ${sortBy === 'wr' ? 'win rate' : 'expectancy'}\n`);
 console.log(
   pad('rule', 32) + 'win%'.padStart(7) + 'need'.padStart(7) + 'exp%'.padStart(8) +
     'med%'.padStart(8) + 'worst'.padStart(8) + 'hold'.padStart(7) + '  top3',
@@ -251,8 +150,15 @@ for (const r of results) {
   );
 }
 
+const cleared = results.filter((r) => r.winRate > r.breakEven && r.expectancy > 0);
 console.log(
   '\nwin% is the share of trades that made money; need is the win rate that rule ' +
     'requires\njust to break even after fees. A rule beating its own "need" is the ' +
     'only kind worth having.',
+);
+console.log(
+  cleared.length === 0
+    ? '\nNo rule cleared its own break-even on this sample.'
+    : `\n${cleared.length} rule(s) cleared their own break-even: ` +
+        cleared.map((r) => r.rule.label).join(', '),
 );

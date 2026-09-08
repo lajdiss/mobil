@@ -98,6 +98,8 @@ export interface Config {
   maxDailyFeeSol: number;
   walletPath: string;
   recordPath: string;
+  recordLaunchesPath: string;
+  recordLaunchSeconds: number;
   port: number;
   exitPollMs: number;
   dryRunFillDelayMs: number;
@@ -232,6 +234,11 @@ export function loadConfig(): Config {
     // or the path stops where this run's own rules decided and no replay can recover
     // the part that was never observed.
     recordPath: process.env.RECORD_PATH || '',
+    // Records every launch's price from the launch event itself, taking no positions.
+    // This is what makes the entry delay a replayable parameter: paths that start at
+    // the entry contain no record of what the price did before it.
+    recordLaunchesPath: process.env.RECORD_LAUNCHES_PATH || '',
+    recordLaunchSeconds: num('RECORD_LAUNCH_SECONDS', 300),
     port: num('PORT', 8787),
     // Backstop for the account stream; a position nobody is watching has no stop-loss.
     exitPollMs: Math.max(500, num('EXIT_POLL_MS', 2000)),

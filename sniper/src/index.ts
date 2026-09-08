@@ -7,6 +7,7 @@ import { CreatorHistory, evaluate } from './filters.js';
 import { KeywordMemory } from './learning.js';
 import { ConsensusTracker } from './consensus.js';
 import { MomentumTracker } from './momentum.js';
+import { LaunchRecorder } from './launches.js';
 import { PathRecorder } from './recorder.js';
 import { PositionManager, type Position } from './positions.js';
 import { Metrics } from './metrics.js';
@@ -122,6 +123,18 @@ const positions = new PositionManager(
 );
 const recorded = new Set<string>();
 
+/**
+ * Observes launches without trading them. Runs alongside whatever entry mode is
+ * selected — it takes no positions and shares the stream that is already open.
+ */
+const launchRecorder = config.recordLaunchesPath
+  ? new LaunchRecorder(config.recordLaunchesPath, config.recordLaunchSeconds, 100)
+  : null;
+if (launchRecorder) setInterval(() => launchRecorder.sweep(), 5000).unref();
+
+/** Creator per mint, so a sale can be attributed without a lookup. Bounded. */
+const launchCreators = new Map<string, string>();
+
 function canBuy(mint: string): string | null {
   rolloverSpendCap();
   if (!armed) return 'not armed';
@@ -175,6 +188,16 @@ const consensus = new ConsensusTracker(
 );
 
 async function handleToken(token: DetectedToken) {
+  if (launchRecorder) {
+    launchCreators.set(token.mint.toBase58(), token.creator.toBase58());
+    if (launchCreators.size > 4000) launchCreators.clear();
+  }
+  launchRecorder?.begin(token.mint, token.symbol, token.name, token.devBuyPct, {
+    virtualTokenReserves: token.virtualTokenReserves,
+    virtualQuoteReserves: token.virtualQuoteReserves || token.virtualSolReserves,
+    realTokenReserves: token.realTokenReserves,
+  });
+
   // Graduate mode watches the curve only to learn which tokens have filled it; the
   // launches themselves are never candidates, so counting them here would report
   // thousands of "detected" tokens the mode was never going to trade.
@@ -498,6 +521,16 @@ const detector = new Detector(
   config.streamEndpoints,
   (token) => void handleToken(token),
   (trade) => {
+    if (launchRecorder) {
+      launchRecorder.sample(trade.mint, trade);
+      if (!trade.isBuy && launchCreators.get(trade.mint.toBase58()) === trade.user.toBase58()) {
+        const bps =
+          trade.virtualQuoteReserves > 0n
+            ? Number((trade.solAmount * 10_000n) / trade.virtualQuoteReserves)
+            : 0;
+        launchRecorder.creatorSale(trade.mint, bps);
+      }
+    }
     positions.onTrade(trade);
     if (config.entryMode === 'momentum') momentum.onTrade(trade);
     // An emptied curve is a graduation: the token is on its way to the AMM.
@@ -685,6 +718,7 @@ async function main() {
 const shutdown = async () => {
   log('shutting down — open positions are left untouched');
   positions.flushRecordings();
+  launchRecorder?.flushAll();
   await detector.stop();
   await graduates.stop();
   process.exit(0);

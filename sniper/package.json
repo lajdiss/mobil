@@ -9,6 +9,7 @@
     "verify:amm": "tsx src/verify-swap.ts",
     "test:exits": "tsx src/selftest-exits.ts",
     "replay": "tsx src/replay.ts",
+    "replay:entry": "tsx src/replay-entry.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
