@@ -2,7 +2,11 @@ import { Connection, PublicKey } from '@solana/web3.js';
 import { loadConfig, loadKeypair, type Config } from './config.js';
 import { Detector, type DetectedToken } from './detector.js';
 import { Executor } from './executor.js';
+import { AttentionTracker } from './attention.js';
 import { GraduateWatcher, type GraduateCandidate } from './graduates.js';
+import { HypeClient } from './hype.js';
+import { graduatedPoolPda } from './pumpswap.js';
+import { TrendingScanner, type TrendingCandidate } from './trending.js';
 import { CreatorHistory, evaluate } from './filters.js';
 import { KeywordMemory } from './learning.js';
 import { ConsensusTracker } from './consensus.js';
@@ -503,6 +507,202 @@ async function enterGraduate(candidate: GraduateCandidate) {
   }
 }
 
+const attention = new AttentionTracker();
+
+/**
+ * Entry on tokens that are alive and being bought by a crowd, whatever their age.
+ *
+ * A graduated token is bought through the AMM and one still on the curve through the
+ * bonding curve, so this dispatches on which market actually holds it rather than
+ * assuming either.
+ */
+async function enterTrending(candidate: TrendingCandidate) {
+  const mintKey = candidate.mint.toBase58();
+  const symbol = candidate.hype.symbol;
+  metrics.start(mintKey);
+  stats.detected++;
+
+  const blocker = canBuy(mintKey);
+  if (blocker) {
+    metrics.finish(mintKey, 'rejected', blocker);
+    return;
+  }
+  stats.passed++;
+
+  try {
+    // Dry run waits and prices afterwards, for the same reason every other entry path
+    // does: a real transaction lands a second or two after the decision, and filling
+    // at the price that triggered the entry books gains the wallet would never see.
+    // This path was written without it and immediately produced an entry that showed
+    // -25% three seconds later.
+    if (config.dryRun && config.dryRunFillDelayMs > 0) {
+      await new Promise((r) => setTimeout(r, config.dryRunFillDelayMs));
+    }
+    if (candidate.hype.graduated) {
+      const state = await executor.getSwapPool(candidate.mint);
+      if (!state) {
+        stats.errors++;
+        log(`skipping ${symbol}: AMM pool could not be read`);
+        metrics.finish(mintKey, 'rejected', 'pool unreadable');
+        return;
+      }
+      metrics.mark(mintKey, 'quote');
+      log(
+        `buying trending ${symbol} for ${config.buyAmountSol} SOL ` +
+          `(score ${candidate.score}, ${candidate.attention.uniqueBuyers} buyers)`,
+      );
+      metrics.mark(mintKey, 'build');
+      const { result, tokenAmount, solSpent } = await executor.buySwap(
+        state.pool,
+        state.baseTokenProgram,
+        state.quote,
+        config.buyAmountSol,
+      );
+      metrics.mark(mintKey, 'submit');
+      spentTodaySol += solSpent;
+      feesTodaySol += estimatedFeeSol();
+      stats.bought++;
+
+      positions.registerSwapPool(mintKey, state.pool, state.baseTokenProgram);
+      positions.add({
+        mint: mintKey,
+        name: candidate.hype.name,
+        symbol,
+        creator: state.pool.coinCreator.toBase58(),
+        tokenProgram: state.baseTokenProgram.toBase58(),
+        tokenAmount,
+        initialTokenAmount: tokenAmount,
+        realisedSol: 0,
+        partialsTaken: 0,
+        stopAtBreakEven: false,
+        entrySol: solSpent,
+        currentSol: solSpent,
+        peakSol: solSpent,
+        pnlPct: 0,
+        openedAt: Date.now(),
+        status: 'open',
+        venue: 'pumpswap',
+        buySignature: result?.signature,
+        history: [0],
+        progressPct: 100,
+        marketCapSol: candidate.hype.marketCapSol,
+      });
+      graduates.track(state.pool.address, candidate.mint);
+      metrics.finish(mintKey, 'bought');
+      log(config.dryRun ? `DRY RUN: would have bought ${symbol}` : `bought ${symbol} — ${result?.signature}`);
+    } else {
+      const [curve, tokenProgram] = await Promise.all([
+        executor.getBondingCurve(candidate.mint),
+        executor.getMintTokenProgram(candidate.mint),
+      ]);
+      // Fail closed on either: an unreadable curve cannot be priced, and an unknown
+      // token program builds the buy against the wrong one.
+      if (!curve || !tokenProgram) {
+        stats.errors++;
+        log(`skipping ${symbol}: curve or token program could not be read`);
+        metrics.finish(mintKey, 'rejected', 'curve unreadable');
+        return;
+      }
+      if (curve.complete) {
+        log(`skipping ${symbol}: already graduated since the scan`);
+        metrics.finish(mintKey, 'rejected', 'graduated since scan');
+        return;
+      }
+      metrics.mark(mintKey, 'quote');
+      log(
+        `buying trending ${symbol} for ${config.buyAmountSol} SOL ` +
+          `(score ${candidate.score}, ${candidate.attention.uniqueBuyers} buyers)`,
+      );
+      metrics.mark(mintKey, 'build');
+      const { result, tokenAmount, solSpent } = await executor.buy(
+        candidate.mint,
+        curve.creator,
+        tokenProgram,
+        config.buyAmountSol,
+        curve,
+      );
+      metrics.mark(mintKey, 'submit');
+      spentTodaySol += solSpent;
+      feesTodaySol += estimatedFeeSol();
+      stats.bought++;
+
+      positions.add({
+        mint: mintKey,
+        name: candidate.hype.name,
+        symbol,
+        creator: curve.creator.toBase58(),
+        tokenProgram: tokenProgram.toBase58(),
+        tokenAmount,
+        initialTokenAmount: tokenAmount,
+        realisedSol: 0,
+        partialsTaken: 0,
+        stopAtBreakEven: false,
+        entrySol: solSpent,
+        currentSol: solSpent,
+        peakSol: solSpent,
+        pnlPct: 0,
+        openedAt: Date.now(),
+        status: 'open',
+        venue: 'pump',
+        buySignature: result?.signature,
+        history: [0],
+        progressPct: 0,
+        marketCapSol: candidate.hype.marketCapSol,
+      });
+      metrics.finish(mintKey, 'bought');
+      log(config.dryRun ? `DRY RUN: would have bought ${symbol}` : `bought ${symbol} — ${result?.signature}`);
+    }
+
+    pushFeed({
+      mint: mintKey,
+      name: candidate.hype.name,
+      symbol,
+      creator: '',
+      at: Date.now(),
+      verdict: 'sniped',
+    });
+  } catch (err) {
+    stats.errors++;
+    const reason = (err as Error).message;
+    metrics.finish(mintKey, 'failed', reason.slice(0, 60));
+    log(`trending buy failed for ${symbol}: ${reason}`);
+    pushFeed({
+      mint: mintKey,
+      name: candidate.hype.name,
+      symbol,
+      creator: '',
+      at: Date.now(),
+      verdict: 'error',
+      reason,
+    });
+  }
+}
+
+const hypeClient = new HypeClient();
+const trending = new TrendingScanner(
+  hypeClient,
+  attention,
+  {
+    maxTradeAgeSeconds: config.trendingMaxTradeAgeSeconds,
+    minUniqueBuyers: config.trendingMinUniqueBuyers,
+    minBuyRatio: config.trendingMinBuyRatio,
+    maxTopBuyerShare: config.trendingMaxTopBuyerShare,
+    minMarketCapSol: config.trendingMinMarketCapSol,
+    maxMarketCapSol: config.trendingMaxMarketCapSol,
+    warmupSeconds: config.trendingWarmupSeconds,
+    requireSocial: config.trendingRequireSocial,
+    scanIntervalSeconds: config.trendingScanIntervalSeconds,
+    scanPages: config.trendingScanPages,
+  },
+  (candidate) => void enterTrending(candidate),
+  (mint, graduated) => {
+    // A graduated token's trades arrive on the AMM stream, which needs the pool
+    // mapped before it can attribute them to this mint.
+    if (graduated) graduates.track(graduatedPoolPda(mint), mint);
+  },
+  log,
+);
+
 const graduates = new GraduateWatcher(
   config.streamEndpoints,
   {
@@ -521,6 +721,7 @@ const detector = new Detector(
   config.streamEndpoints,
   (token) => void handleToken(token),
   (trade) => {
+    attention.onTrade(trade);
     if (launchRecorder) {
       launchRecorder.sample(trade.mint, trade);
       if (!trade.isBuy && launchCreators.get(trade.mint.toBase58()) === trade.user.toBase58()) {
@@ -627,6 +828,7 @@ const getState = (): DashboardState => ({
   graduates: config.entryMode === 'graduate' ? graduates.health() : null,
   pendingEntries: delayed.size,
   consensus: config.entryMode === 'consensus' ? consensus.health() : null,
+  trending: config.entryMode === 'trending' ? trending.health() : null,
 });
 
 const EDITABLE_NUMERIC = new Set([
@@ -685,6 +887,9 @@ async function main() {
     copy: `copy (follow wallets with ${config.copyMinRealisedSol}+ SOL over ${config.copyMinClosed}+ trades)`,
     snipe: 'snipe (buy at launch)',
     delay: `delay (buy every qualifying launch ${config.delaySeconds}s after it happens)`,
+    trending:
+      `trending (alive tokens of any age with ${config.trendingMinUniqueBuyers}+ distinct ` +
+      `buyers in ${config.trendingWarmupSeconds}s)`,
     consensus:
       `consensus (enter when ${config.consensusMinWallets} proven wallets buy the same ` +
       `token within ${config.consensusWindowSeconds}s)`,
@@ -707,6 +912,12 @@ async function main() {
   // Graduate mode needs both streams: the curve says which tokens have graduated, and
   // the AMM says what is happening to them afterwards. Neither alone is enough.
   if (config.entryMode === 'graduate') graduates.start();
+  // Trending mode needs both streams: candidates live on the curve and on the AMM,
+  // and attention is counted from whichever one carries their trades.
+  if (config.entryMode === 'trending') {
+    graduates.start();
+    trending.start();
+  }
   positions.startExitPolling(config.exitPollMs);
   setInterval(() => void refreshBalance(), 30_000);
   setInterval(() => void executor.refreshBlockhash(), 10_000);

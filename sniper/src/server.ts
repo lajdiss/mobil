@@ -29,6 +29,8 @@ export interface DashboardState {
   pendingEntries: number;
   /** Present only in consensus mode: how much agreement has been seen. */
   consensus: unknown;
+  /** Present only in trending mode: scanner and pump.fun API health. */
+  trending: unknown;
   stream: {
     alive: boolean;
     silentMs: number | null;

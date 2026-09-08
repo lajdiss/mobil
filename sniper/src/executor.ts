@@ -90,6 +90,16 @@ export class Executor {
     return this.globalState;
   }
 
+  /**
+   * Which token program owns a mint. Launch events carry this, but a token picked up
+   * later — by age or by a scan — has no launch event to read it from, and guessing
+   * wrong builds an instruction against the wrong program.
+   */
+  async getMintTokenProgram(mint: PublicKey): Promise<PublicKey | null> {
+    const info = await this.rpc(() => this.connection.getAccountInfo(mint, 'processed'));
+    return info ? tokenProgramFromOwner(info.owner) : null;
+  }
+
   async getBondingCurve(mint: PublicKey): Promise<BondingCurve | null> {
     const info = await this.rpc(() => this.connection.getAccountInfo(bondingCurvePda(mint)));
     return info ? decodeBondingCurve(info.data) : null;

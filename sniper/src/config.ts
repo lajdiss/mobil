@@ -70,7 +70,14 @@ export interface Config {
   blockedNamePatterns: string[];
   maxCreatorLaunchesPerHour: number;
   maxDevBuyPct: number;
-  entryMode: 'snipe' | 'momentum' | 'copy' | 'delay' | 'graduate' | 'consensus';
+  entryMode:
+    | 'snipe'
+    | 'momentum'
+    | 'copy'
+    | 'delay'
+    | 'graduate'
+    | 'consensus'
+    | 'trending';
   momentumMinLiquiditySol: number;
   momentumMinBuys: number;
   momentumMaxAgeSeconds: number;
@@ -85,6 +92,16 @@ export interface Config {
   consensusMinWallets: number;
   consensusWindowSeconds: number;
   consensusMaxAgeSeconds: number;
+  trendingMaxTradeAgeSeconds: number;
+  trendingMinUniqueBuyers: number;
+  trendingMinBuyRatio: number;
+  trendingMaxTopBuyerShare: number;
+  trendingMinMarketCapSol: number;
+  trendingMaxMarketCapSol: number;
+  trendingWarmupSeconds: number;
+  trendingRequireSocial: boolean;
+  trendingScanIntervalSeconds: number;
+  trendingScanPages: number;
   learningEnabled: boolean;
   learningMinTrades: number;
   learningMinScore: number;
@@ -179,7 +196,7 @@ export function loadConfig(): Config {
     // and trades the AMM pool a token lands in after it graduates.
     entryMode: ((): Config['entryMode'] => {
       const mode = process.env.ENTRY_MODE || 'snipe';
-      const known = ['momentum', 'copy', 'delay', 'graduate', 'consensus'] as const;
+      const known = ['momentum', 'copy', 'delay', 'graduate', 'consensus', 'trending'] as const;
       return (known as readonly string[]).includes(mode) ? (mode as Config['entryMode']) : 'snipe';
     })(),
     momentumMinLiquiditySol: num('MOMENTUM_MIN_LIQUIDITY_SOL', 5),
@@ -209,6 +226,22 @@ export function loadConfig(): Config {
     consensusMinWallets: Math.max(2, num('CONSENSUS_MIN_WALLETS', 3)),
     consensusWindowSeconds: num('CONSENSUS_WINDOW_SECONDS', 45),
     consensusMaxAgeSeconds: num('CONSENSUS_MAX_AGE_SECONDS', 300),
+    // Trending mode ignores the launch entirely and picks from tokens that are alive
+    // now, whatever their age. Attention is measured as distinct buyers from the event
+    // streams — pump.fun's own comment counts are months stale on every token sampled,
+    // so they describe history rather than interest.
+    trendingMaxTradeAgeSeconds: num('TRENDING_MAX_TRADE_AGE_SECONDS', 60),
+    trendingMinUniqueBuyers: num('TRENDING_MIN_UNIQUE_BUYERS', 12),
+    trendingMinBuyRatio: num('TRENDING_MIN_BUY_RATIO', 0.55),
+    // One wallet doing most of the buying is a whale, not a crowd.
+    trendingMaxTopBuyerShare: num('TRENDING_MAX_TOP_BUYER_SHARE', 0.5),
+    trendingMinMarketCapSol: num('TRENDING_MIN_MARKET_CAP_SOL', 30),
+    trendingMaxMarketCapSol: num('TRENDING_MAX_MARKET_CAP_SOL', 5000),
+    // Below this the buyer count measures how long we have been watching, not interest.
+    trendingWarmupSeconds: num('TRENDING_WARMUP_SECONDS', 45),
+    trendingRequireSocial: bool('TRENDING_REQUIRE_SOCIAL', false),
+    trendingScanIntervalSeconds: num('TRENDING_SCAN_INTERVAL_SECONDS', 20),
+    trendingScanPages: num('TRENDING_SCAN_PAGES', 4),
     // Learning records outcomes from the first trade, but only starts rejecting
     // candidates once there is enough history for a score to mean anything.
     learningEnabled: bool('LEARNING_ENABLED', true),

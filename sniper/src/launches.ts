@@ -38,6 +38,33 @@ export interface RecordedLaunch {
   devBuyPct: number;
   samples: LaunchSample[];
   creatorSales: { t: number; bps: number }[];
+  /**
+   * Selection signals captured at a fixed moment after the launch, so the replay can
+   * test whether they predict anything before any of them gates a real trade. Absent
+   * on recordings made before they existed.
+   */
+  signals?: LaunchSignals;
+}
+
+export interface LaunchSignals {
+  /** Seconds after the launch at which these were taken. */
+  atSeconds: number;
+  /** From the trade stream: how many different wallets had bought by then. */
+  uniqueBuyers?: number;
+  buyersPerMinute?: number;
+  buyRatio?: number;
+  netSolFlow?: number;
+  topBuyerShare?: number;
+  /** From pump.fun: comment count and socials. Absent when the API did not answer. */
+  replyCount?: number;
+  repliesPerMinute?: number;
+  hasTwitter?: boolean;
+  hasTelegram?: boolean;
+  hasWebsite?: boolean;
+  isCurrentlyLive?: boolean;
+  hypeScore?: number;
+  /** True when pump.fun was asked and did not answer — distinct from "no hype". */
+  hypeUnavailable?: boolean;
 }
 
 export class LaunchRecorder {
@@ -80,6 +107,12 @@ export class LaunchRecorder {
       vt: curve.virtualTokenReserves.toString(),
       vq: curve.virtualQuoteReserves.toString(),
     });
+  }
+
+  /** Attaches the selection signals for a launch still being followed. */
+  attachSignals(mint: PublicKey, signals: LaunchSignals) {
+    const record = this.open.get(mint.toBase58());
+    if (record && !record.signals) record.signals = signals;
   }
 
   creatorSale(mint: PublicKey, bps: number) {
