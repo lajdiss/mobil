@@ -22,7 +22,8 @@
     "replay:momentum": "tsx src/replay-momentum.ts",
     "typecheck": "tsc --noEmit",
     "test:memory": "tsx src/selftest-memory.ts",
-    "test:fills": "tsx src/selftest-fills.ts"
+    "test:fills": "tsx src/selftest-fills.ts",
+    "collect": "tsx src/collect.ts"
   },
   "dependencies": {
     "@solana/web3.js": "^1.98.0",

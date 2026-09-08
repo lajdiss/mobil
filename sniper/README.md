@@ -113,6 +113,24 @@ Dashboard běží na `http://localhost:8787`.
 Bot startuje **odzbrojený**. Sniping začne až po stisku **ARM**. `PANIC SELL`
 okamžitě odzbrojí bota a prodá všechny otevřené pozice.
 
+## Sběr dat přes noc
+
+```bash
+npm run collect
+```
+
+Nahrává cenovou dráhu **každého** launche pět minut od jeho vzniku, ať se kupuje
+nebo ne, do `data/launches.jsonl`. Na tomhle souboru stojí všechna offline měření
+níž a vzorek je momentálně to, co je nejvíc omezuje — proto se vyplatí nechat to
+běžet dlouho. Za osm hodin přibude zhruba 7 000 launchů a 15 MB.
+
+Dry run je tady **vynucený**, ne výchozí: tohle se pouští a nechává být na hodiny
+a takový běh nesmí utrácet jen proto, že v `.env` zůstal starý řádek. Vedle toho
+obchoduje nasucho, aby paměť dostala uzavřené obchody, ze kterých se učí.
+
+Ctrl+C zapíše i rozběhnuté launche; tvrdé zabití procesu stojí posledních pět
+minut, nic víc.
+
 ## Otevření na telefonu
 
 Dashboard je responzivní, ale bot musí běžet na počítači — telefon je jen okno
@@ -262,15 +280,33 @@ překlápí do ztráty kolem dvou sekund. Na domácím PC přes veřejné RPC se
 právě v té ztrátové části tabulky — proto je nahoře napsáno, že bez rychlé infry
 je to záporné EV. Není to opatrnost, je to naměřené.
 
-**3. Úspěšnost bývá vlastnost okna, ne strategie.** Rozdělení nahrávek na dvě
+**3. Vstup taky nedostaneš zadarmo.** Replay dlouho plnil vstup na ceně, která
+rozhodnutí spustila. Tu cenu nikdo nedostane — mezi rozhodnutím a fillem je
+dotaz na RPC, sestavení a potvrzení transakce. Po opravě (`REPLAY_ENTRY_DELAY`,
+výchozí 1,5 s stejně jako u výstupu) se výsledky posunuly takhle:
+
+| plnění vstupu | úspěšnost | expectancy |
+|---|---|---|
+| na spouštěcím ticku | 68 % | +11,82 % |
+| po 1,5 s | 51 % | −5,27 % |
+
+To nebyl detail. Na 785 nahraných launchích **nemá po opravě žádná kombinace
+čekání a filtru aktivity kladnou expectancy** — filtr aktivity, crowd gate
+i vstup v +45 s měřily tenhle jeden artefakt. Nejrušnější třetina tokenů podle
+počtu obchodů za sekundu je dokonce nejhorší, ne nejlepší. `npm run test:fills`
+to hlídá, aby se to nevrátilo potřetí.
+
+**4. Úspěšnost bývá vlastnost okna, ne strategie.** Rozdělení nahrávek na dvě
 poloviny podle času dalo 9,3 % úspěšnosti v jedné a 53,5 % v druhé, a **žádné
 pravidlo nedrželo v obou**. Když ti vyjde hezké číslo na malém vzorku, skoro
 jistě jsi změřil trh, ne své nastavení.
 
 ### Když ti vyjde nízká úspěšnost
 
-Než začneš ladit, zkontroluj v `.env` tohle — starší kopie repa měly jako výchozí
-právě tu nejhůř měřenou kombinaci:
+Než začneš ladit, zkontroluj v `.env` tohle. Nejsou to nastavení, o kterých by
+šlo tvrdit, že vydělávají — po opravě plnění vstupu (bod 3 výš) nevydělává na
+naměřených datech žádné. Jsou to ta, u kterých je doložené, že ta ostatní jsou
+horší:
 
 ```
 ENTRY_MODE=delay            # ne snipe: snipe je závod o latenci, který prohraješ
