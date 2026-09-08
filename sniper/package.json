@@ -14,6 +14,7 @@
     "replay:split": "tsx src/replay-split.ts",
     "replay:regime": "tsx src/replay-regime.ts",
     "replay:signals": "tsx src/replay-signals.ts",
+    "replay:activity": "tsx src/replay-activity.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
