@@ -183,7 +183,8 @@ export class Executor {
     const global = await this.getGlobalState();
     const feeRecipients = feeRecipientCandidates(global);
     const buybacks = global.buybackFeeRecipients;
-    const attempts = Math.min(Math.max(feeRecipients.length, buybacks.length), 8);
+    // All of them; a cap here silently makes the last candidates unreachable.
+    const attempts = Math.max(feeRecipients.length, buybacks.length);
     let lastError: Error | null = null;
 
     for (let i = 0; i < attempts; i++) {
@@ -468,7 +469,12 @@ export class Executor {
     const config = await this.getSwapConfig();
     const recipients = swapFeeRecipientCandidates(config);
     const buybacks = config.buybackFeeRecipients;
-    const attempts = Math.min(Math.max(recipients.length, buybacks.length), 8);
+    // Every candidate, not the first eight. The cap used to be 8 while the list holds
+    // nine — eight protocol recipients plus the reserved one — so the reserved
+    // recipient was never reached. Mayhem pools require exactly that one, which made
+    // them look untradeable: the rotation exhausted itself and reported "no authorized
+    // fee recipient" while never having tried the one that works.
+    const attempts = Math.max(recipients.length, buybacks.length);
     let lastError: Error | null = null;
 
     for (let i = 0; i < attempts; i++) {
@@ -500,10 +506,9 @@ export class Executor {
     solAmount: number,
   ): Promise<{ result: TradeResult | null; tokenAmount: bigint; solSpent: number }> {
     if (pool.isCashbackCoin) throw new Error('cashback coin — this bot cannot sell it');
-    // The AMM equivalent of the mayhem guard stays until it is tested the way the
-    // curve one was. Mayhem trades fine on the bonding curve — verified against live
-    // tokens — but that says nothing about the pool it graduates into.
-    if (pool.isMayhemMode) throw new Error('mayhem mode pool — not yet verified on the AMM');
+    // Mayhem pools are traded, not skipped. Two live ones simulate a clean buy and
+    // sell once the recipient rotation actually reaches the reserved recipient they
+    // require — which it did not, before the cap above was removed.
 
     const solIn = solToLamports(solAmount);
     const tokens = tokensForSol(quote, solIn);

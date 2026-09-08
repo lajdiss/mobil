@@ -166,11 +166,14 @@ export const swapFeeBps = (config: SwapGlobalConfig): number =>
   Number(config.lpFeeBps + config.protocolFeeBps + config.coinCreatorFeeBps);
 
 /**
- * Ordered the opposite way round from the bonding curve's, and deliberately so: the
- * reserved recipient is the one the curve accepts, and the AMM rejects it outright
- * with InvalidProtocolFeeRecipient. Every live swap sampled from mainnet used an entry
- * from protocol_fee_recipients, so those go first and the reserved one stays only as
- * a fallback in case the program changes its mind again.
+ * Ordered the opposite way round from the bonding curve's, and deliberately so:
+ * ordinary pools reject the reserved recipient outright with
+ * InvalidProtocolFeeRecipient, and every live swap sampled from mainnet used an entry
+ * from protocol_fee_recipients.
+ *
+ * The reserved recipient is not a fallback for form's sake, though — mayhem pools
+ * require it and reject all eight of the others. It has to be reachable, which is why
+ * the caller iterates every candidate rather than capping the rotation.
  */
 export function swapFeeRecipientCandidates(config: SwapGlobalConfig): PublicKey[] {
   const seen = new Set<string>();
