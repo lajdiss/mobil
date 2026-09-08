@@ -197,14 +197,14 @@ const consensus = new ConsensusTracker(
  * gates a real trade. Nothing here decides anything; it only writes down what was
  * knowable at that moment.
  */
-async function captureSignals(token: DetectedToken) {
+async function captureSignals(token: DetectedToken, atSeconds: number) {
   if (!launchRecorder) return;
   const key = token.mint.toBase58();
   const stats = attention.stats(key);
   const hype = await hypeClient.fetch(key).catch(() => null);
 
   launchRecorder.attachSignals(token.mint, {
-    atSeconds: config.recordSignalsAtSeconds,
+    atSeconds,
     uniqueBuyers: stats?.uniqueBuyers,
     buyersPerMinute: stats?.buyersPerMinute,
     buyRatio: stats?.buyRatio,
@@ -233,7 +233,9 @@ async function handleToken(token: DetectedToken) {
     // Taken at a fixed offset for every launch. A reading at whatever moment happened
     // to be convenient would let the replay mistake "measured later" for "more
     // interest".
-    setTimeout(() => void captureSignals(token), config.recordSignalsAtSeconds * 1000).unref();
+    for (const offset of config.recordSignalOffsets) {
+      setTimeout(() => void captureSignals(token, offset), offset * 1000).unref();
+    }
   }
   launchRecorder?.begin(token.mint, token.symbol, token.name, token.devBuyPct, {
     virtualTokenReserves: token.virtualTokenReserves,

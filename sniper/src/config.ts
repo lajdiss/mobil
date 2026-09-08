@@ -118,6 +118,7 @@ export interface Config {
   recordLaunchesPath: string;
   recordLaunchSeconds: number;
   recordSignalsAtSeconds: number;
+  recordSignalOffsets: number[];
   port: number;
   exitPollMs: number;
   dryRunFillDelayMs: number;
@@ -277,6 +278,14 @@ export function loadConfig(): Config {
     // offset, or the replay is comparing readings taken at different points in a
     // token's life and calling the difference a signal.
     recordSignalsAtSeconds: num('RECORD_SIGNALS_AT_SECONDS', 45),
+    // Several offsets, because one conflates "the signal does not work" with "it was
+    // read too late to act on". The early ones matter most: measured on recorded
+    // paths, 39% of tokens peaked within five seconds of a 30-second entry.
+    recordSignalOffsets: (process.env.RECORD_SIGNAL_OFFSETS || '10,20,45,90')
+      .split(',')
+      .map((v) => Number(v.trim()))
+      .filter((v) => Number.isFinite(v) && v > 0)
+      .sort((a, b) => a - b),
     port: num('PORT', 8787),
     // Backstop for the account stream; a position nobody is watching has no stop-loss.
     exitPollMs: Math.max(500, num('EXIT_POLL_MS', 2000)),

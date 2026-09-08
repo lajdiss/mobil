@@ -44,6 +44,15 @@ export interface RecordedLaunch {
    * on recordings made before they existed.
    */
   signals?: LaunchSignals;
+  /**
+   * The same signals taken at several offsets.
+   *
+   * One offset was not enough. Reading the crowd at 45 seconds means only ever
+   * testing an entry at 45 seconds, and the ceiling measurements say the move is
+   * usually over well before that — so a single offset conflates "this signal does
+   * not work" with "this signal was read too late to act on".
+   */
+  signalSeries?: LaunchSignals[];
 }
 
 export interface LaunchSignals {
@@ -109,10 +118,14 @@ export class LaunchRecorder {
     });
   }
 
-  /** Attaches the selection signals for a launch still being followed. */
+  /** Attaches one reading to a launch still being followed. */
   attachSignals(mint: PublicKey, signals: LaunchSignals) {
     const record = this.open.get(mint.toBase58());
-    if (record && !record.signals) record.signals = signals;
+    if (!record) return;
+    (record.signalSeries ??= []).push(signals);
+    // The single-offset field stays populated with the first reading so recordings
+    // remain readable by anything written before the series existed.
+    record.signals ??= signals;
   }
 
   creatorSale(mint: PublicKey, bps: number) {
