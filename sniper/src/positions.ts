@@ -453,6 +453,9 @@ export class PositionManager {
       );
     }
 
+    // Only once the position is genuinely finished. A failed sell goes back to open
+    // and retries, and flushing there would truncate the path mid-trade.
+    this.recorder?.finish(mint);
     this.onChange(position);
   }
 
@@ -516,7 +519,6 @@ export class PositionManager {
       position.partialsTaken--;
       this.onLog(`partial sell failed for ${position.symbol}: ${(err as Error).message}`);
     }
-    this.recorder?.finish(mint);
     this.onChange(position);
   }
 
@@ -543,6 +545,11 @@ export class PositionManager {
       tokens,
       knownCurve,
     );
+  }
+
+  /** Called on shutdown so a killed process does not lose every open recording. */
+  flushRecordings() {
+    this.recorder?.flushAll();
   }
 
   /** Panic path: closing one at a time would leave the last positions waiting. */

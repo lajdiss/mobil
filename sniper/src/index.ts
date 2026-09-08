@@ -684,6 +684,7 @@ async function main() {
 
 const shutdown = async () => {
   log('shutting down — open positions are left untouched');
+  positions.flushRecordings();
   await detector.stop();
   await graduates.stop();
   process.exit(0);

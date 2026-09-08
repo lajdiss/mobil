@@ -88,6 +88,19 @@ export class PathRecorder {
     appendFileSync(this.path, JSON.stringify(record) + '\n');
   }
 
+  /**
+   * Writes out every path still in progress.
+   *
+   * Paths are otherwise only written when a position closes, which means a killed
+   * process loses everything currently open — and in this environment processes are
+   * reclaimed regularly. A truncated path is still worth having: it can score any rule
+   * that would have fired inside the span it covers, and the replay reports anything
+   * needing longer as path-ended rather than scoring it.
+   */
+  flushAll() {
+    for (const mint of [...this.open.keys()]) this.finish(mint);
+  }
+
   get tracking(): number {
     return this.open.size;
   }
