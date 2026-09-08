@@ -432,7 +432,10 @@ export class Executor {
 
     const pool = decodePool(address, poolInfo.data);
     if (!pool) return null;
+    // Not knowing which token program owns the mint is a reason to leave the token
+    // alone, not to assume classic SPL and build the wrong instruction.
     const baseTokenProgram = tokenProgramFromOwner(mintInfo.owner);
+    if (!baseTokenProgram) return null;
     const baseVault = ataFor(address, baseMint, baseTokenProgram);
     if (!pool.poolBaseTokenAccount.equals(baseVault)) {
       throw new Error('pool base vault is not the derived associated account');

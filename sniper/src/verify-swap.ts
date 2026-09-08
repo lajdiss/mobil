@@ -103,6 +103,7 @@ async function findGraduatedPool(): Promise<LivePool | null> {
       if (!pool) continue;
 
       const baseTokenProgram = tokenProgramFromOwner(mintInfo.owner);
+      if (!baseTokenProgram) continue;
       const [baseVault, quoteVault] = await connection.getMultipleAccountsInfo([
         pool.poolBaseTokenAccount,
         pool.poolQuoteTokenAccount,

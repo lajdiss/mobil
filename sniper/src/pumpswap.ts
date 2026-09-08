@@ -308,9 +308,21 @@ export function buildSwapSellInstruction(
   } as TransactionInstruction;
 }
 
-/** pump.fun mints are Token-2022 now, but older graduated ones are not. */
-export const tokenProgramFromOwner = (owner: PublicKey): PublicKey =>
-  owner.equals(TOKEN_2022_PROGRAM) ? TOKEN_2022_PROGRAM : TOKEN_PROGRAM;
+/**
+ * Which token program owns a mint. pump.fun mints are Token-2022 now, but older
+ * graduated ones are not.
+ *
+ * Null for anything else, deliberately. The obvious form of this — Token-2022 if it
+ * matches, classic otherwise — treats a failed read, a closed account, or a
+ * mis-derived address as classic SPL and builds an instruction against the wrong
+ * program. Defaulting is the wrong instinct here: not knowing which program owns a
+ * mint is a reason to leave the token alone, not to pick one.
+ */
+export const tokenProgramFromOwner = (owner: PublicKey): PublicKey | null => {
+  if (owner.equals(TOKEN_2022_PROGRAM)) return TOKEN_2022_PROGRAM;
+  if (owner.equals(TOKEN_PROGRAM)) return TOKEN_PROGRAM;
+  return null;
+};
 
 const metaFor = (pubkey: PublicKey, isWritable: boolean, isSigner = false): AccountMeta => ({
   pubkey,

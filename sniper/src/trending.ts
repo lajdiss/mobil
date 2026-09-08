@@ -62,6 +62,13 @@ export class TrendingScanner {
   private timer: NodeJS.Timeout | null = null;
 
   readonly counters = { scans: 0, pooled: 0, watching: 0, qualified: 0, apiFailures: 0 };
+  /**
+   * Why candidates were dropped, per scan. A filter that rejects everything looks
+   * exactly like a quiet market from the outside — that failure mode cost this project
+   * 57 launches in a row before anyone noticed, so the reasons are counted rather than
+   * discarded.
+   */
+  private rejections = new Map<string, number>();
 
   constructor(
     private readonly client: HypeClient,
@@ -86,7 +93,14 @@ export class TrendingScanner {
   }
 
   health() {
-    return { ...this.counters, watching: this.watched.size, api: this.client.health() };
+    return {
+      ...this.counters,
+      watching: this.watched.size,
+      rejected: Object.fromEntries(
+        [...this.rejections.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8),
+      ),
+      api: this.client.health(),
+    };
   }
 
   private async scan() {
@@ -100,8 +114,13 @@ export class TrendingScanner {
     }
     this.counters.pooled = coins.length;
 
+    this.rejections.clear();
     for (const coin of coins) {
-      if (!this.eligible(coin)) continue;
+      const reject = this.rejectionReason(coin);
+      if (reject) {
+        this.rejections.set(reject, (this.rejections.get(reject) ?? 0) + 1);
+        continue;
+      }
       if (this.watched.has(coin.mint)) continue;
       let mint: PublicKey;
       try {
@@ -125,21 +144,25 @@ export class TrendingScanner {
   }
 
   /** Cheap gates from the API alone, before anything is watched or scored. */
-  private eligible(coin: HypeSnapshot): boolean {
-    if (coin.isBanned) return false;
-    if (coin.lastTradeAgoSeconds === null) return false;
-    if (coin.lastTradeAgoSeconds > this.config.maxTradeAgeSeconds) return false;
-    if (coin.marketCapSol < this.config.minMarketCapSol) return false;
-    if (coin.marketCapSol > this.config.maxMarketCapSol) return false;
+  private rejectionReason(coin: HypeSnapshot): string | null {
+    if (coin.isBanned) return 'banned';
+    if (coin.lastTradeAgoSeconds === null) return 'never traded';
+    if (coin.lastTradeAgoSeconds > this.config.maxTradeAgeSeconds) return 'no recent trade';
+    if (coin.marketCapSol < this.config.minMarketCapSol) return 'market cap too small';
+    if (coin.marketCapSol > this.config.maxMarketCapSol) return 'market cap too large';
     if (
       this.config.requireSocial &&
       !coin.hasTwitter &&
       !coin.hasTelegram &&
       !coin.hasWebsite
     ) {
-      return false;
+      return 'no socials';
     }
-    return true;
+    return null;
+  }
+
+  private note(reason: string) {
+    this.rejections.set(reason, (this.rejections.get(reason) ?? 0) + 1);
   }
 
   private evaluateAll() {
@@ -151,10 +174,22 @@ export class TrendingScanner {
       if (watchedFor < this.config.warmupSeconds) continue;
 
       const stats = this.attention.stats(key);
-      if (!stats) continue;
-      if (stats.uniqueBuyers < this.config.minUniqueBuyers) continue;
-      if (stats.buyRatio < this.config.minBuyRatio) continue;
-      if (stats.topBuyerShare > this.config.maxTopBuyerShare) continue;
+      if (!stats) {
+        this.note('no attention data');
+        continue;
+      }
+      if (stats.uniqueBuyers < this.config.minUniqueBuyers) {
+        this.note('too few distinct buyers');
+        continue;
+      }
+      if (stats.buyRatio < this.config.minBuyRatio) {
+        this.note('being sold into');
+        continue;
+      }
+      if (stats.topBuyerShare > this.config.maxTopBuyerShare) {
+        this.note('one wallet dominates the buying');
+        continue;
+      }
 
       entry.entered = true;
       this.counters.qualified++;

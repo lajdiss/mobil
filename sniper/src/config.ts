@@ -117,6 +117,7 @@ export interface Config {
   recordPath: string;
   recordLaunchesPath: string;
   recordLaunchSeconds: number;
+  recordSignalsAtSeconds: number;
   port: number;
   exitPollMs: number;
   dryRunFillDelayMs: number;
@@ -272,6 +273,10 @@ export function loadConfig(): Config {
     // the entry contain no record of what the price did before it.
     recordLaunchesPath: process.env.RECORD_LAUNCHES_PATH || '',
     recordLaunchSeconds: num('RECORD_LAUNCH_SECONDS', 300),
+    // When to snapshot the selection signals for a recorded launch. Has to be a fixed
+    // offset, or the replay is comparing readings taken at different points in a
+    // token's life and calling the difference a signal.
+    recordSignalsAtSeconds: num('RECORD_SIGNALS_AT_SECONDS', 45),
     port: num('PORT', 8787),
     // Backstop for the account stream; a position nobody is watching has no stop-loss.
     exitPollMs: Math.max(500, num('EXIT_POLL_MS', 2000)),

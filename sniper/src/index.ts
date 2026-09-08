@@ -4,7 +4,7 @@ import { Detector, type DetectedToken } from './detector.js';
 import { Executor } from './executor.js';
 import { AttentionTracker } from './attention.js';
 import { GraduateWatcher, type GraduateCandidate } from './graduates.js';
-import { HypeClient } from './hype.js';
+import { HypeClient, hypeScore } from './hype.js';
 import { graduatedPoolPda } from './pumpswap.js';
 import { TrendingScanner, type TrendingCandidate } from './trending.js';
 import { CreatorHistory, evaluate } from './filters.js';
@@ -191,10 +191,49 @@ const consensus = new ConsensusTracker(
   },
 );
 
+/**
+ * Records what the selection signals looked like a fixed time after a launch, so the
+ * offline replay can test whether any of them predict the outcome before any of them
+ * gates a real trade. Nothing here decides anything; it only writes down what was
+ * knowable at that moment.
+ */
+async function captureSignals(token: DetectedToken) {
+  if (!launchRecorder) return;
+  const key = token.mint.toBase58();
+  const stats = attention.stats(key);
+  const hype = await hypeClient.fetch(key).catch(() => null);
+
+  launchRecorder.attachSignals(token.mint, {
+    atSeconds: config.recordSignalsAtSeconds,
+    uniqueBuyers: stats?.uniqueBuyers,
+    buyersPerMinute: stats?.buyersPerMinute,
+    buyRatio: stats?.buyRatio,
+    netSolFlow: stats?.netSolFlow,
+    topBuyerShare: stats?.topBuyerShare,
+    replyCount: hype?.replyCount,
+    repliesPerMinute: hype?.repliesPerMinute,
+    hasTwitter: hype?.hasTwitter,
+    hasTelegram: hype?.hasTelegram,
+    hasWebsite: hype?.hasWebsite,
+    isCurrentlyLive: hype?.isCurrentlyLive,
+    hypeScore: hype ? hypeScore(hype) : undefined,
+    // Distinct from "no hype": the API was asked and did not answer.
+    hypeUnavailable: hype === null,
+  });
+}
+
 async function handleToken(token: DetectedToken) {
   if (launchRecorder) {
-    launchCreators.set(token.mint.toBase58(), token.creator.toBase58());
+    const key = token.mint.toBase58();
+    launchCreators.set(key, token.creator.toBase58());
     if (launchCreators.size > 4000) launchCreators.clear();
+    // Counting distinct buyers has to start at the launch, not when something first
+    // asks about the token.
+    attention.register(key, Date.now());
+    // Taken at a fixed offset for every launch. A reading at whatever moment happened
+    // to be convenient would let the replay mistake "measured later" for "more
+    // interest".
+    setTimeout(() => void captureSignals(token), config.recordSignalsAtSeconds * 1000).unref();
   }
   launchRecorder?.begin(token.mint, token.symbol, token.name, token.devBuyPct, {
     virtualTokenReserves: token.virtualTokenReserves,
@@ -920,6 +959,9 @@ async function main() {
   }
   positions.startExitPolling(config.exitPollMs);
   setInterval(() => void refreshBalance(), 30_000);
+  // The trending scanner sweeps as part of its scan; every other mode needs this or
+  // the buyer tables grow for as long as the process lives.
+  if (config.entryMode !== 'trending') setInterval(() => attention.sweep(), 60_000).unref();
   setInterval(() => void executor.refreshBlockhash(), 10_000);
   if (config.entryMode === 'copy' || config.entryMode === 'consensus') {
     setInterval(() => wallets.save(), 60_000);
