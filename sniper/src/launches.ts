@@ -2,6 +2,7 @@ import { appendFileSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { PublicKey } from '@solana/web3.js';
 import type { CurveQuote } from './pump.js';
+import type { RecordedPath } from './recorder.js';
 
 /**
  * Records a token's price from the moment it launches, without taking a position.
@@ -108,4 +109,56 @@ export class LaunchRecorder {
   get tracking(): number {
     return this.open.size;
   }
+}
+
+const solForTokens = (vt: bigint, vq: bigint, tokens: bigint) =>
+  tokens <= 0n ? 0n : (tokens * vq) / (vt + tokens);
+const tokensForSol = (vt: bigint, vq: bigint, sol: bigint) =>
+  sol <= 0n ? 0n : (sol * vt) / (vq + sol);
+
+/** Matches the live runs, so replayed sizes and fees are the ones actually traded. */
+export const REPLAY_BUY_LAMPORTS = 50_000_000n;
+
+/**
+ * The path a buyer entering `delaySeconds` after the launch would have seen.
+ *
+ * Returns null when the recording does not reach that far, rather than entering at the
+ * last sample it has — scoring a delay against a launch that ended before it would
+ * quietly bias every result toward longer delays.
+ */
+export function entryPathFromLaunch(
+  launch: RecordedLaunch,
+  delaySeconds: number,
+): RecordedPath | null {
+  const entryIndex = launch.samples.findIndex((s) => s.t >= delaySeconds * 1000);
+  if (entryIndex === -1) return null;
+  const after = launch.samples.slice(entryIndex);
+  // One sample is a price, not a path; there is nothing for an exit rule to act on.
+  if (after.length < 2) return null;
+
+  const entry = after[0];
+  const vt = BigInt(entry.vt);
+  const vq = BigInt(entry.vq);
+  // A curve quoted in something other than SOL reports zero SOL reserves, and every
+  // price here divides by them — it would produce NaN rather than an error.
+  if (vt <= 0n || vq <= 0n) return null;
+
+  const tokens = tokensForSol(vt, vq, REPLAY_BUY_LAMPORTS);
+  if (tokens <= 0n) return null;
+  const costLamports = Number(solForTokens(vt, vq, tokens)) * ((1e4 + launch.feeBps) / 1e4);
+  if (costLamports <= 0) return null;
+
+  return {
+    mint: launch.mint,
+    symbol: launch.symbol,
+    venue: 'pump',
+    openedAt: launch.launchedAt + entry.t,
+    entrySol: costLamports / 1e9,
+    entryTokens: tokens.toString(),
+    feeBps: launch.feeBps,
+    samples: after.map((s) => ({ t: s.t - entry.t, vt: s.vt, vq: s.vq })),
+    creatorSales: launch.creatorSales
+      .filter((c) => c.t >= entry.t)
+      .map((c) => ({ t: c.t - entry.t, bps: c.bps })),
+  };
 }

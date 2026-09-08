@@ -16,7 +16,7 @@
  *   npm run replay:entry -- data/launches.jsonl
  */
 import { readFileSync } from 'node:fs';
-import type { RecordedLaunch } from './launches.js';
+import { entryPathFromLaunch, type RecordedLaunch } from './launches.js';
 import type { RecordedPath } from './recorder.js';
 import { rule, simulate, type ExitRule } from './exitrules.js';
 
@@ -26,48 +26,6 @@ const tokensForSol = (vt: bigint, vq: bigint, sol: bigint) =>
   sol <= 0n ? 0n : (sol * vt) / (vq + sol);
 
 const BUY_LAMPORTS = 50_000_000n; // 0.05 SOL, matching the live runs
-
-/**
- * Turns a launch into the path a buyer entering `delaySeconds` late would have seen.
- * Returns null when the recording does not reach that far — scoring a delay against a
- * launch that ended first would quietly bias the result toward long delays.
- */
-function pathFromLaunch(launch: RecordedLaunch, delaySeconds: number): RecordedPath | null {
-  const delayMs = delaySeconds * 1000;
-  const entryIndex = launch.samples.findIndex((s) => s.t >= delayMs);
-  if (entryIndex === -1) return null;
-  const after = launch.samples.slice(entryIndex);
-  // One sample is a price, not a path; there is nothing for an exit rule to act on.
-  if (after.length < 2) return null;
-
-  const entry = after[0];
-  const vt = BigInt(entry.vt);
-  const vq = BigInt(entry.vq);
-  // A curve quoted in something other than SOL reports zero SOL reserves, and every
-  // price here divides by them. Scoring it would produce NaN, which averages into an
-  // expectancy silently rather than raising — so it is dropped, not priced.
-  if (vt <= 0n || vq <= 0n) return null;
-  const feeMultiplier = (1e4 + launch.feeBps) / 1e4;
-  const tokens = tokensForSol(vt, vq, BUY_LAMPORTS);
-  if (tokens <= 0n) return null;
-
-  // What the buy actually costs, fee included — the same basis the live executor books.
-  const costLamports = Number(solForTokens(vt, vq, tokens)) * feeMultiplier;
-
-  return {
-    mint: launch.mint,
-    symbol: launch.symbol,
-    venue: 'pump',
-    openedAt: launch.launchedAt + entry.t,
-    entrySol: costLamports / 1e9,
-    entryTokens: tokens.toString(),
-    feeBps: launch.feeBps,
-    samples: after.map((s) => ({ t: s.t - entry.t, vt: s.vt, vq: s.vq })),
-    creatorSales: launch.creatorSales
-      .filter((c) => c.t >= entry.t)
-      .map((c) => ({ t: c.t - entry.t, bps: c.bps })),
-  };
-}
 
 const median = (xs: number[]) => {
   if (xs.length === 0) return 0;
@@ -124,7 +82,7 @@ for (const label of ['WIN RATE %', 'EXPECTANCY %', 'MEDIAN %', 'TOP-3 SHARE OF P
   console.log('-'.repeat(8 + EXITS.length * 14 + 4));
   for (const delay of DELAYS) {
     const paths = launches
-      .map((l) => pathFromLaunch(l, delay))
+      .map((l) => entryPathFromLaunch(l, delay))
       .filter((p): p is RecordedPath => p !== null);
     if (paths.length === 0) continue;
     const cells = EXITS.map((exit) => {
@@ -161,7 +119,7 @@ console.log(pad('  wait', 8) + 'ever >0%'.padStart(10) + 'ever >2%'.padStart(10)
   'median peak'.padStart(13) + '   n');
 for (const delay of DELAYS) {
   const paths = launches
-    .map((l) => pathFromLaunch(l, delay))
+    .map((l) => entryPathFromLaunch(l, delay))
     .filter((p): p is RecordedPath => p !== null);
   if (paths.length === 0) continue;
   const peaks = paths.map((p) => {
