@@ -44,6 +44,42 @@ cp .env.example .env
 # vyplň PRIVATE_KEY
 ```
 
+## Aktualizace na nejnovější verzi
+
+Bot se pořád mění. Pokud už ho máš stažený:
+
+```bash
+cd mobil/sniper
+git pull
+npm install          # jen když se změnil package.json
+npm run verify       # ověř, že instrukce pořád sedí
+npm run verify:amm   # totéž pro AMM (graduované tokeny)
+npm start
+```
+
+Pokud si nejsi jistý, že jsi na správné větvi:
+
+```bash
+git checkout claude/plzen-dating-app-wu5ryb
+git pull
+```
+
+Kdyby `git pull` hlásil konflikt kvůli tvým vlastním úpravám, tohle zahodí
+lokální změny a vezme čistou verzi z GitHubu (`.env` zůstane, je gitignorovaný):
+
+```bash
+git reset --hard origin/claude/plzen-dating-app-wu5ryb
+```
+
+Stahuješ poprvé:
+
+```bash
+git clone -b claude/plzen-dating-app-wu5ryb https://github.com/lajdiss/mobil.git
+cd mobil/sniper
+npm install
+cp .env.example .env
+```
+
 ## Ověření, že instrukce sedí
 
 ```bash
@@ -53,6 +89,18 @@ npm run verify
 Sestaví reálnou buy i sell transakci proti živému tokenu a nechá je **nasimulovat**
 — nic se nepodepisuje ani neodesílá. Spusť to po každém `git pull`: pump.fun svůj
 program mění a případný rozjezd layoutu se projeví právě tady.
+
+## Testy
+
+```bash
+npm run test:filters   # filtr propouští běžné launche a odmítá vadné
+npm run test:exits     # scale-out a exit na prodeji tvůrce
+```
+
+`test:filters` existuje kvůli konkrétní chybě: filtr, který vypadal rozumně,
+odmítal **57 ze 57 launchů** a bot prostě přestal obchodovat. Nic nespadlo, nic
+nezalogovalo chybu — jediný příznak bylo počítadlo na nule. Test proto kontroluje
+i to, že běžný launch **projde**, ne jen že vadný neprojde.
 
 ## Spuštění
 
@@ -176,6 +224,59 @@ Bot nic nepredikuje. Nemá názor na to, který token poroste; kupuje, co projde
 filtry, a mechanicky uřízne pozici podle pravidel. Úspěšnost je tedy vlastnost
 tvého nastavení a tržních podmínek, ne inteligence bota.
 
+### Co vyšlo z měření
+
+Bot umí nahrávat cenové dráhy na disk a pak přes ně offline přehrát libovolné
+výstupní pravidlo. Díky tomu se dá porovnávat na **identických obchodech**, ne na
+dvou různých běžících instancích:
+
+```bash
+npm run replay -- data/paths.jsonl              # mřížka pravidel
+npm run replay -- data/paths.jsonl --sort=wr    # seřazeno podle úspěšnosti
+npm run replay -- data/paths.jsonl --latency    # cena zpoždění výstupu
+npm run replay:split -- data/paths.jsonl        # drží to na druhé polovině dat?
+npm run replay:entry -- data/launches.jsonl     # kdy nakoupit × jak vystoupit
+npm run replay:regime -- data/launches.jsonl    # jde poznat dobré okno předem?
+```
+
+Tři věci, které z toho vyšly a stojí za to je znát, než si něco nastavíš:
+
+**1. Výstupy jsou na stropě.** Když se každá nahraná dráha prodá v jejím vlastním
+vrcholu — tedy s dokonalou předvídavostí — vyjde skoro stejná úspěšnost jako
+u nejlepšího reálného pravidla. Z tokenu, který se nikdy neobchodoval nad
+vstupem, nevyrobí výhru žádné TP/SL. Ladit výstupy tedy nemá smysl.
+
+**2. Rozhoduje zpoždění výstupu, ne pravidlo.** Stejné dráhy, mění se jen okamžik,
+kdy se prodej naceňuje:
+
+| zpoždění | úspěšnost | expectancy | bez 3 nejlepších |
+|---|---|---|---|
+| 0 s | 43,9 % | +5,21 % | +3,89 % |
+| 1 s | 38,9 % | +3,45 % | +1,98 % |
+| 1,5 s | 36,7 % | +1,98 % | +0,62 % |
+| 3 s | 31,1 % | −0,22 % | −1,61 % |
+| 5 s | 28,3 % | −0,52 % | −1,57 % |
+
+Zhruba **2 body expectancy a 4 body úspěšnosti za každou sekundu**. Celé to
+překlápí do ztráty kolem dvou sekund. Na domácím PC přes veřejné RPC se pohybuješ
+právě v té ztrátové části tabulky — proto je nahoře napsáno, že bez rychlé infry
+je to záporné EV. Není to opatrnost, je to naměřené.
+
+**3. Úspěšnost bývá vlastnost okna, ne strategie.** Rozdělení nahrávek na dvě
+poloviny podle času dalo 9,3 % úspěšnosti v jedné a 53,5 % v druhé, a **žádné
+pravidlo nedrželo v obou**. Když ti vyjde hezké číslo na malém vzorku, skoro
+jistě jsi změřil trh, ne své nastavení.
+
+### Čemu nevěřit
+
+Sloupec `exp-3` je expectancy po odebrání tří nejlepších obchodů a `top3` říká,
+kolik procent zisku ty tři nesou. Když je `top3` kolem 100 % nebo výš, "zisk"
+dělá jeden šťastný token a při dalším běhu tam nebude.
+
+Sloupec `need` (potřebná úspěšnost) se tiskne jako `n/a`, pokud méně než 70 %
+výstupů skončí na TP nebo SL — vzorec totiž předpokládá, že skončí všechny.
+Jakmile většina obchodů vyprší časem pár procent od vstupu, `need` nepopisuje nic.
+
 ## Náklady
 
 **Fixní, měsíčně:**
@@ -236,8 +337,33 @@ Vše v `.env` (viz `.env.example`). Za pozornost stojí:
 | `TRAILING_STOP_PCT` | `0` = vypnuto |
 | `MAX_HOLD_SECONDS` | časový výstup bez ohledu na PnL |
 | `MAX_CREATOR_LAUNCHES_PER_HOUR` | ochrana proti sériovým ruggerům |
+| `ENTRY_MODE` | co bot vůbec kupuje (viz níže) |
 
 Take profit, stop loss a velikost pozice jdou měnit za běhu v dashboardu.
+
+### Režimy vstupu (`ENTRY_MODE`)
+
+| Režim | Co dělá |
+|---|---|
+| `snipe` | kupuje na launchi. Závod o latenci, který veřejné RPC prohrává. |
+| `delay` | kupuje ty samé launche o `DELAY_SECONDS` později, bez podmínek |
+| `momentum` | čeká, až token na křivce nabere likviditu a kupující |
+| `copy` | následuje peněženky s měřeným výsledkem |
+| `consensus` | čeká, až ten samý token koupí několik ověřených peněženek naráz |
+| `graduate` | ignoruje křivku a obchoduje AMM pool po graduaci |
+| `trending` | vybírá **živé tokeny jakéhokoli stáří** podle toho, kolik různých peněženek je právě kupuje |
+
+`trending` je nejnovější a jediný, který nestojí na launchi. Bere z pump.fun
+seznam tokenů obchodovaných v posledních `TRENDING_MAX_TRADE_AGE_SECONDS`
+a pozornost počítá z vlastního streamu — **kolik různých peněženek** kupuje, ne
+kolik proběhlo obchodů. Dvacet nákupů od tří peněženek je jeden bot v kruhu;
+dvacet od dvaceti je dav. Hlídá i `TRENDING_MAX_TOP_BUYER_SHARE`, aby se velryba
+nespletla s davem.
+
+Komentáře na pump.fun (callouty) se jako signál **nedají použít** — ze 295 živě
+obchodovaných tokenů neměl ani jeden komentář za posledních 24 hodin a všechny
+časy posledního komentáře byly ~7 měsíců staré. `reply_count` je historický
+pozůstatek, ne známka zájmu.
 
 ## Poznámky k implementaci
 
