@@ -40,11 +40,19 @@ function evaluate(paths: RecordedPath[], rule: ExitRule) {
 
   const reasons: Record<string, number> = {};
   for (const o of outcomes) reasons[o.reason] = (reasons[o.reason] ?? 0) + 1;
+  // The break-even formula assumes every trade ends at the take-profit or the
+  // stop-loss. Once most exits are timeouts landing a couple of percent from entry,
+  // it describes nothing — a rule can sit far below its "need" and still make money
+  // because its losers are small. Expectancy is the arbiter then, not the ratio.
+  const atThreshold =
+    ((reasons['take-profit'] ?? 0) + (reasons['stop-loss'] ?? 0)) / outcomes.length;
 
   return {
     rule,
     winRate: (wins / outcomes.length) * 100,
     breakEven,
+    breakEvenApplies: atThreshold >= 0.7,
+    thresholdSharePct: atThreshold * 100,
     expectancy,
     median: median(pcts),
     best: Math.max(...pcts),
@@ -53,6 +61,13 @@ function evaluate(paths: RecordedPath[], rule: ExitRule) {
     reasons,
     // With a fat tail, the mean is one lucky trade away from meaningless. This says
     // how much of the total the three best contributed.
+    // The sharpest robustness test there is: drop the three best trades and see what
+    // is left. A real edge survives it; a mean carried by outliers collapses.
+    expectancyMinusTop3: (() => {
+      if (pcts.length <= 3) return null;
+      const trimmed = [...pcts].sort((a, b) => b - a).slice(3);
+      return trimmed.reduce((a, b) => a + b, 0) / trimmed.length;
+    })(),
     top3Share: (() => {
       const sorted = [...pcts].sort((a, b) => b - a);
       const total = pcts.reduce((a, b) => a + b, 0);
@@ -134,15 +149,16 @@ const num = (v: number, n: number, digits = 1) => v.toFixed(digits).padStart(n);
 console.log(`ranked by ${sortBy === 'wr' ? 'win rate' : 'expectancy'}\n`);
 console.log(
   pad('rule', 32) + 'win%'.padStart(7) + 'need'.padStart(7) + 'exp%'.padStart(8) +
-    'med%'.padStart(8) + 'worst'.padStart(8) + 'hold'.padStart(7) + '  top3',
+    'exp-3'.padStart(8) + 'med%'.padStart(8) + 'worst'.padStart(8) + 'hold'.padStart(7) + '  top3',
 );
 console.log('-'.repeat(84));
 for (const r of results) {
   console.log(
     pad(r.rule.label, 32) +
       num(r.winRate, 7) +
-      num(r.breakEven, 7) +
+      (r.breakEvenApplies ? num(r.breakEven, 7) : '    n/a') +
       num(r.expectancy, 8, 2) +
+      (r.expectancyMinusTop3 === null ? '       —' : num(r.expectancyMinusTop3, 8, 2)) +
       num(r.median, 8, 2) +
       num(r.worst, 8, 1) +
       num(r.avgHold, 7, 0) +
@@ -150,15 +166,25 @@ for (const r of results) {
   );
 }
 
-const cleared = results.filter((r) => r.winRate > r.breakEven && r.expectancy > 0);
+// Positive expectancy is what "worth having" means. The win-rate-versus-need test is
+// a shortcut that only holds when trades actually end at a threshold.
+const cleared = results.filter(
+  (r) => r.expectancy > 0 && (!r.breakEvenApplies || r.winRate > r.breakEven),
+);
 console.log(
   '\nwin% is the share of trades that made money; need is the win rate that rule ' +
-    'requires\njust to break even after fees. A rule beating its own "need" is the ' +
-    'only kind worth having.',
+    'requires\njust to break even after fees — shown as n/a when fewer than 70% of ' +
+    'exits land at\nthe take-profit or stop-loss, because the formula assumes they all do.',
 );
 console.log(
   cleared.length === 0
-    ? '\nNo rule cleared its own break-even on this sample.'
-    : `\n${cleared.length} rule(s) cleared their own break-even: ` +
-        cleared.map((r) => r.rule.label).join(', '),
+    ? '\nNo rule made money on this sample.'
+    : `\n${cleared.length} rule(s) made money on this sample: ` +
+        cleared
+          .map((r) => `${r.rule.label} (${r.expectancy.toFixed(2)}%)`)
+          .join(', ') +
+        `\nOf those, ${
+          cleared.filter((r) => (r.expectancyMinusTop3 ?? -1) > 0).length
+        } still make money with their three best trades removed (exp-3 column).` +
+        '\nA mean carried by three trades out of eighty is an outlier, not an edge.',
 );
