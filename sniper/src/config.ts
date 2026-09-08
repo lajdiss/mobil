@@ -89,6 +89,7 @@ export interface Config {
   graduateMinBuyRatio: number;
   delaySeconds: number;
   delayMinLiquiditySol: number;
+  minTradesBeforeEntry: number;
   consensusMinWallets: number;
   consensusWindowSeconds: number;
   consensusMaxAgeSeconds: number;
@@ -222,6 +223,13 @@ export function loadConfig(): Config {
     // Off by default on purpose: a liquidity floor would quietly turn this into
     // momentum mode and stop it measuring the delay on its own.
     delayMinLiquiditySol: num('DELAY_MIN_LIQUIDITY_SOL', 0),
+    // Trades a token must already have had before it is worth entering. Measured on
+    // 260 recorded launches entered at +45s: no filter gives a 36% win rate and
+    // -0.29% expectancy, a floor of 12 gives 45% and +1.16%, and a floor of 50 gives
+    // 58% and a positive median. Nothing survives its three best trades being removed,
+    // so this reduces the drag rather than creating an edge. Applies to every mode
+    // that enters after the launch; a snipe has no history to count.
+    minTradesBeforeEntry: num('MIN_TRADES_BEFORE_ENTRY', 0),
     // Copy mode follows the first proven wallet and measured out as noise twice over.
     // This asks for agreement instead: several wallets with a record, buying the same
     // token close together. Three is the smallest number that is not a coincidence.

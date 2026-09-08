@@ -223,13 +223,14 @@ async function captureSignals(token: DetectedToken, atSeconds: number) {
 }
 
 async function handleToken(token: DetectedToken) {
+  // Counting has to start at the launch, not when something first asks about the
+  // token — and the entry filter needs it whether or not anything is being recorded.
+  attention.register(token.mint.toBase58(), Date.now());
+
   if (launchRecorder) {
     const key = token.mint.toBase58();
     launchCreators.set(key, token.creator.toBase58());
     if (launchCreators.size > 4000) launchCreators.clear();
-    // Counting distinct buyers has to start at the launch, not when something first
-    // asks about the token.
-    attention.register(key, Date.now());
     // Taken at a fixed offset for every launch. A reading at whatever moment happened
     // to be convenient would let the replay mistake "measured later" for "more
     // interest".
@@ -348,6 +349,26 @@ async function enterPosition(token: DetectedToken) {
       if (now.complete) {
         log(`skipping ${token.symbol}: already graduated off the curve`);
         return;
+      }
+      // A token nobody is trading is the single biggest drag measured on recorded
+      // launches: lifting the floor from zero to twelve trades moved the win rate
+      // from 36% to 45%. Counted from the stream, so it costs nothing.
+      if (config.minTradesBeforeEntry > 0) {
+        const seen = attention.stats(mintKey);
+        const trades = seen ? seen.buys + seen.sells : 0;
+        if (trades < config.minTradesBeforeEntry) {
+          metrics.finish(mintKey, 'rejected', 'too few trades so far');
+          pushFeed({
+            mint: mintKey,
+            name: token.name,
+            symbol: token.symbol,
+            creator: token.creator.toBase58(),
+            at: Date.now(),
+            verdict: 'skipped',
+            reason: `only ${trades} trades since launch`,
+          });
+          return;
+        }
       }
       // Only checked when a floor is configured; at the default of 0 this mode buys
       // whatever it finds, which is the point.
