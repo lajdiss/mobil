@@ -13,6 +13,7 @@ import { ConsensusTracker } from './consensus.js';
 import { MomentumTracker } from './momentum.js';
 import { LaunchRecorder } from './launches.js';
 import { PathRecorder } from './recorder.js';
+import { EntryQueue } from './selection.js';
 import { PositionManager, type Position } from './positions.js';
 import { Metrics } from './metrics.js';
 import { WalletTracker } from './wallets.js';
@@ -127,6 +128,9 @@ const positions = new PositionManager(
 );
 const recorded = new Set<string>();
 
+/** Counts who is buying what, from the streams that are already open. */
+const attention = new AttentionTracker();
+
 /**
  * Observes launches without trading them. Runs alongside whatever entry mode is
  * selected — it takes no positions and shares the stream that is already open.
@@ -174,6 +178,22 @@ const momentum = new MomentumTracker(
     log(`${token.symbol} qualified: ${liquiditySol.toFixed(2)} SOL liquidity, ${buys} buys`);
     void enterPosition(token);
   },
+);
+
+/**
+ * Candidates wait here and the busiest goes first. Without it the bot enters whatever
+ * clears the floor soonest, which is not the same thing as the best one available.
+ */
+const entryQueue = new EntryQueue<DetectedToken>(
+  {
+    windowSeconds: Math.max(1, config.selectionWindowSeconds),
+    maxAgeSeconds: config.selectionMaxAgeSeconds,
+    perRound: config.selectionPerRound,
+  },
+  attention,
+  config.crowdWindowSeconds,
+  (token) => void enterPosition(token),
+  () => positions.openCount() < config.maxOpenPositions,
 );
 
 const consensus = new ConsensusTracker(
@@ -600,8 +620,6 @@ async function enterGraduate(candidate: GraduateCandidate) {
   }
 }
 
-const attention = new AttentionTracker();
-
 /**
  * Entry on tokens that are alive and being bought by a crowd, whatever their age.
  *
@@ -920,6 +938,7 @@ const getState = (): DashboardState => ({
   stream: detector.health(),
   graduates: config.entryMode === 'graduate' ? graduates.health() : null,
   pendingEntries: delayed.size,
+  selection: config.selectionWindowSeconds > 0 ? entryQueue.health() : null,
   consensus: config.entryMode === 'consensus' ? consensus.health() : null,
   trending: config.entryMode === 'trending' ? trending.health() : null,
 });
@@ -1004,6 +1023,13 @@ async function main() {
   detector.start();
   // Graduate mode needs both streams: the curve says which tokens have graduated, and
   // the AMM says what is happening to them afterwards. Neither alone is enough.
+  if (config.selectionWindowSeconds > 0) {
+    entryQueue.start();
+    log(
+      `selecting the busiest candidate every ${config.selectionWindowSeconds}s ` +
+        `rather than the first to qualify`,
+    );
+  }
   if (config.entryMode === 'graduate') graduates.start();
   // Trending mode needs both streams: candidates live on the curve and on the AMM,
   // and attention is counted from whichever one carries their trades.

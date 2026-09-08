@@ -93,6 +93,9 @@ export interface Config {
   crowdWindowSeconds: number;
   crowdMinTradeRate: number;
   crowdMaxRunUpPct: number;
+  selectionWindowSeconds: number;
+  selectionMaxAgeSeconds: number;
+  selectionPerRound: number;
   consensusMinWallets: number;
   consensusWindowSeconds: number;
   consensusMaxAgeSeconds: number;
@@ -249,6 +252,14 @@ export function loadConfig(): Config {
     crowdWindowSeconds: num('CROWD_WINDOW_SECONDS', 20),
     crowdMinTradeRate: num('CROWD_MIN_TRADE_RATE', 0),
     crowdMaxRunUpPct: num('CROWD_MAX_RUNUP_PCT', 0),
+    // Pool candidates briefly and buy the busiest, rather than the first one to clear
+    // the floor. A floor of twelve trades passes 50% of all launches while the busiest
+    // run to 121 in the same window, so entering on the first acceptable token fills
+    // the position slots with median ones and leaves no room for the active ones.
+    // 0 disables the pooling and restores first-come entry.
+    selectionWindowSeconds: num('SELECTION_WINDOW_SECONDS', 0),
+    selectionMaxAgeSeconds: num('SELECTION_MAX_AGE_SECONDS', 120),
+    selectionPerRound: Math.max(1, num('SELECTION_PER_ROUND', 1)),
     // Copy mode follows the first proven wallet and measured out as noise twice over.
     // This asks for agreement instead: several wallets with a record, buying the same
     // token close together. Three is the smallest number that is not a coincidence.

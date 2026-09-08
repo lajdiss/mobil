@@ -31,6 +31,8 @@ export interface DashboardState {
   consensus: unknown;
   /** Present only in trending mode: scanner and pump.fun API health. */
   trending: unknown;
+  /** Present when candidates are pooled and ranked rather than entered first-come. */
+  selection: unknown;
   stream: {
     alive: boolean;
     silentMs: number | null;
