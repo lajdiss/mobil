@@ -314,5 +314,28 @@ export function loadConfig(): Config {
   if (cfg.stopLossPct <= 0 || cfg.stopLossPct >= 100) {
     throw new Error('STOP_LOSS_PCT must be between 0 and 100.');
   }
+
+  /**
+   * The priority fee is a fixed cost per transaction and the position is not, so a
+   * small position pays it as a large percentage. At the old defaults — 0.01 SOL a
+   * trade at 500k microlamports over 250k compute units — a round trip cost 0.00026
+   * SOL in priority fees alone, which is 2.6% of the position before pump.fun's own
+   * 2% is counted. That is a 4.6% hole every trade has to climb out of, and it is
+   * large enough to turn a measured +1.98% edge into a loss on its own.
+   *
+   * This is not a preference, it is arithmetic, so it warns rather than staying quiet.
+   */
+  const priorityFeePerTx =
+    (cfg.priorityFeeMicroLamports * cfg.computeUnitLimit) / 1e6 / 1e9 + 0.000005;
+  const roundTripFeeShare = ((priorityFeePerTx * 2) / cfg.buyAmountSol) * 100;
+  if (roundTripFeeShare > 1) {
+    console.warn(
+      `\n  WARNING: priority fees are ${roundTripFeeShare.toFixed(1)}% of every round trip.\n` +
+        `  ${(priorityFeePerTx * 2).toFixed(6)} SOL of fixed fees against a ` +
+        `${cfg.buyAmountSol} SOL position.\n` +
+        `  Raise BUY_AMOUNT_SOL or lower PRIORITY_FEE_MICROLAMPORTS — at this ratio the\n` +
+        `  fee alone is larger than any edge measured for this bot.\n`,
+    );
+  }
   return cfg;
 }
