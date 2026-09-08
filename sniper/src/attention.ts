@@ -1,5 +1,13 @@
 import type { TradeUpdate } from './pump.js';
 
+/** One trade, kept only long enough to answer questions about the recent past. */
+interface Tick {
+  at: number;
+  /** Quote reserves after the trade, so a price change can be derived. */
+  vq: bigint;
+  vt: bigint;
+}
+
 /**
  * How many different people are buying a token, and how fast that is changing.
  *
@@ -33,8 +41,22 @@ export interface AttentionStats {
   ageSeconds: number;
 }
 
+/** What the crowd has been doing over a recent window, rather than since launch. */
+export interface CrowdWindow {
+  /** Trades per second over the window. */
+  tradeRate: number;
+  /** Price change across the window in percent, as a holder would have seen it. */
+  runUpPct: number;
+  /** Trades the window is based on; below a handful the rate means little. */
+  trades: number;
+}
+
+/** Ticks older than this cannot inform any window the bot asks about. */
+const TICK_RETENTION_MS = 120_000;
+
 interface Tracked {
   bornAt: number;
+  ticks: Tick[];
   buyers: Map<string, number>;
   sellers: Set<string>;
   buys: number;
@@ -54,6 +76,7 @@ export class AttentionTracker {
     if (this.tracked.has(mint)) return;
     this.tracked.set(mint, {
       bornAt: at,
+      ticks: [],
       buyers: new Map(),
       sellers: new Set(),
       buys: 0,
@@ -69,6 +92,12 @@ export class AttentionTracker {
     if (!entry) return;
     const sol = Number(trade.solAmount) / 1e9;
     const wallet = trade.user.toBase58();
+
+    const now = Date.now();
+    entry.ticks.push({ at: now, vq: trade.virtualQuoteReserves, vt: trade.virtualTokenReserves });
+    // Trimmed from the front; a busy token would otherwise keep every trade of its life.
+    const cutoff = now - TICK_RETENTION_MS;
+    while (entry.ticks.length > 0 && entry.ticks[0].at < cutoff) entry.ticks.shift();
 
     if (trade.isBuy) {
       entry.buys++;
@@ -100,6 +129,42 @@ export class AttentionTracker {
       largestBuySol: entry.largestBuySol,
       topBuyerShare: entry.solIn > 0 ? topBuyerSol / entry.solIn : 0,
       ageSeconds,
+    };
+  }
+
+  /**
+   * How fast the crowd is arriving, and whether the price has already moved.
+   *
+   * These two answer different halves of the same question and measured in opposite
+   * directions: heavy trading predicted good outcomes, an existing run-up predicted
+   * bad ones. The reading is that the crowd visible in the price is the exit rather
+   * than the entry — what pays is buying while people are still arriving and the
+   * price has not caught up.
+   *
+   * Null when the window holds too few trades to say anything, so a caller that fails
+   * closed can tell "quiet" from "not yet known".
+   */
+  crowd(mint: string, windowSeconds: number, at = Date.now()): CrowdWindow | null {
+    const entry = this.tracked.get(mint);
+    if (!entry) return null;
+    const from = at - windowSeconds * 1000;
+    const window = entry.ticks.filter((t) => t.at >= from);
+    if (window.length < 4) return null;
+
+    const first = window[0];
+    const last = window[window.length - 1];
+    // Value of a fixed holding at each end — the same constant-product price the
+    // entry and the exit use, so the number means the same thing everywhere.
+    const unit = 10n ** 6n;
+    const priceAt = (tick: Tick) =>
+      tick.vt + unit > 0n ? Number((unit * tick.vq) / (tick.vt + unit)) : 0;
+    const before = priceAt(first);
+    const after = priceAt(last);
+
+    return {
+      tradeRate: window.length / windowSeconds,
+      runUpPct: before > 0 ? ((after - before) / before) * 100 : 0,
+      trades: window.length,
     };
   }
 

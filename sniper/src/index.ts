@@ -370,6 +370,37 @@ async function enterPosition(token: DetectedToken) {
           return;
         }
       }
+
+      // Buy the crowd arriving, not the one already priced in. Fails closed: a window
+      // with too few trades to judge is a reason to skip, not to assume it is quiet.
+      if (config.crowdMinTradeRate > 0 || config.crowdMaxRunUpPct !== 0) {
+        const crowd = attention.crowd(mintKey, config.crowdWindowSeconds);
+        const reason = !crowd
+          ? 'not enough recent trades to judge the crowd'
+          : config.crowdMinTradeRate > 0 && crowd.tradeRate < config.crowdMinTradeRate
+            ? `${crowd.tradeRate.toFixed(2)} trades/s over the last ${config.crowdWindowSeconds}s`
+            : config.crowdMaxRunUpPct !== 0 && crowd.runUpPct > config.crowdMaxRunUpPct
+              ? `already up ${crowd.runUpPct.toFixed(1)}% — the crowd is the exit`
+              : null;
+        if (reason || !crowd) {
+          metrics.finish(mintKey, 'rejected', (reason ?? 'no crowd reading').slice(0, 60));
+          pushFeed({
+            mint: mintKey,
+            name: token.name,
+            symbol: token.symbol,
+            creator: token.creator.toBase58(),
+            at: Date.now(),
+            verdict: 'skipped',
+            reason: reason ?? 'no crowd reading',
+          });
+          return;
+        }
+        log(
+          `${token.symbol}: ${crowd.tradeRate.toFixed(2)} trades/s, ` +
+            `${crowd.runUpPct >= 0 ? '+' : ''}${crowd.runUpPct.toFixed(1)}% over ` +
+            `${config.crowdWindowSeconds}s — crowd still arriving`,
+        );
+      }
       // Only checked when a floor is configured; at the default of 0 this mode buys
       // whatever it finds, which is the point.
       if (config.entryMode === 'delay' && config.delayMinLiquiditySol > 0) {

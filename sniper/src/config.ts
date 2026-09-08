@@ -90,6 +90,9 @@ export interface Config {
   delaySeconds: number;
   delayMinLiquiditySol: number;
   minTradesBeforeEntry: number;
+  crowdWindowSeconds: number;
+  crowdMinTradeRate: number;
+  crowdMaxRunUpPct: number;
   consensusMinWallets: number;
   consensusWindowSeconds: number;
   consensusMaxAgeSeconds: number;
@@ -230,6 +233,22 @@ export function loadConfig(): Config {
     // so this reduces the drag rather than creating an edge. Applies to every mode
     // that enters after the launch; a snipe has no history to count.
     minTradesBeforeEntry: num('MIN_TRADES_BEFORE_ENTRY', 0),
+    // Buy the crowd that is arriving, not the one that already arrived.
+    //
+    // Measured over 564 recorded launches entered 45 seconds in: the top third by
+    // trade rate returned a 65% win rate, +7.14% expectancy and a positive median —
+    // the first positive median found in this project. The run-up feature pointed the
+    // other way, tokens already up 7%+ returning -8.30% once outliers were removed
+    // against +0.53% for tokens that had fallen. Together at +45s with a run-up cap:
+    // 68% wins, +14.09% expectancy, +10.25% median.
+    //
+    // It does not survive the halves test — the second half's profit is three trades
+    // out of twenty-one — so this is a hypothesis being run live to collect more of
+    // the data that would settle it, not a strategy known to work. Both thresholds
+    // default to off.
+    crowdWindowSeconds: num('CROWD_WINDOW_SECONDS', 20),
+    crowdMinTradeRate: num('CROWD_MIN_TRADE_RATE', 0),
+    crowdMaxRunUpPct: num('CROWD_MAX_RUNUP_PCT', 0),
     // Copy mode follows the first proven wallet and measured out as noise twice over.
     // This asks for agreement instead: several wallets with a record, buying the same
     // token close together. Three is the smallest number that is not a coincidence.

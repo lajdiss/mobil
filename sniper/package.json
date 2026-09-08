@@ -9,6 +9,7 @@
     "verify:amm": "tsx src/verify-swap.ts",
     "test:exits": "tsx src/selftest-exits.ts",
     "test:filters": "tsx src/selftest-filters.ts",
+    "test:crowd": "tsx src/selftest-crowd.ts",
     "replay": "tsx src/replay.ts",
     "replay:entry": "tsx src/replay-entry.ts",
     "replay:split": "tsx src/replay-split.ts",
