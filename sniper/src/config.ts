@@ -65,7 +65,7 @@ export interface Config {
   blockedNamePatterns: string[];
   maxCreatorLaunchesPerHour: number;
   maxDevBuyPct: number;
-  entryMode: 'snipe' | 'momentum';
+  entryMode: 'snipe' | 'momentum' | 'copy';
   momentumMinLiquiditySol: number;
   momentumMinBuys: number;
   momentumMaxAgeSeconds: number;
@@ -74,6 +74,10 @@ export interface Config {
   learningMinTrades: number;
   learningMinScore: number;
   learningPath: string;
+  copyMinClosed: number;
+  copyMinRealisedSol: number;
+  copyMinWinRate: number;
+  walletPath: string;
   port: number;
   exitPollMs: number;
   dryRunFillDelayMs: number;
@@ -134,7 +138,10 @@ export function loadConfig(): Config {
     maxDevBuyPct: num('MAX_DEV_BUY_PCT', 0),
     // 'snipe' races the launch; 'momentum' waits for a token to prove itself first,
     // which trades away the launch pop for independence from latency.
-    entryMode: (process.env.ENTRY_MODE || 'snipe') === 'momentum' ? 'momentum' : 'snipe',
+    entryMode: ((): Config['entryMode'] => {
+      const mode = process.env.ENTRY_MODE || 'snipe';
+      return mode === 'momentum' || mode === 'copy' ? mode : 'snipe';
+    })(),
     momentumMinLiquiditySol: num('MOMENTUM_MIN_LIQUIDITY_SOL', 5),
     momentumMinBuys: num('MOMENTUM_MIN_BUYS', 8),
     momentumMaxAgeSeconds: num('MOMENTUM_MAX_AGE_SECONDS', 120),
@@ -145,6 +152,11 @@ export function loadConfig(): Config {
     learningMinTrades: num('LEARNING_MIN_TRADES', 200),
     learningMinScore: num('LEARNING_MIN_SCORE', -100),
     learningPath: process.env.LEARNING_PATH || 'data/keyword-memory.json',
+    // What a wallet must have shown on the curve before the bot follows its buys.
+    copyMinClosed: num('COPY_MIN_CLOSED', 10),
+    copyMinRealisedSol: num('COPY_MIN_REALISED_SOL', 1),
+    copyMinWinRate: num('COPY_MIN_WIN_RATE', 0.5),
+    walletPath: process.env.WALLET_PATH || 'data/wallet-stats.json',
     port: num('PORT', 8787),
     // Backstop for the account stream; a position nobody is watching has no stop-loss.
     exitPollMs: Math.max(500, num('EXIT_POLL_MS', 2000)),

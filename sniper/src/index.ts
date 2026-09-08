@@ -6,6 +6,7 @@ import { CreatorHistory, evaluate } from './filters.js';
 import { KeywordMemory } from './learning.js';
 import { MomentumTracker } from './momentum.js';
 import { PositionManager, type Position } from './positions.js';
+import { WalletTracker } from './wallets.js';
 import { startServer, type DashboardState } from './server.js';
 
 const config = loadConfig();
@@ -18,6 +19,22 @@ const connection = new Connection(config.rpcUrl, {
 const executor = new Executor(connection, wallet, config);
 const history = new CreatorHistory();
 const memory = new KeywordMemory(config.learningPath);
+const wallets = new WalletTracker(config.walletPath);
+
+/**
+ * Copy mode follows buys on tokens whose launch we saw, so their name, creator and
+ * token program are already known. Capped and trimmed: launches arrive all day.
+ */
+const recentTokens = new Map<string, DetectedToken>();
+function rememberToken(token: DetectedToken) {
+  recentTokens.set(token.mint.toBase58(), token);
+  if (recentTokens.size > 3000) {
+    for (const key of recentTokens.keys()) {
+      recentTokens.delete(key);
+      if (recentTokens.size <= 2000) break;
+    }
+  }
+}
 
 interface FeedEntry {
   mint: string;
@@ -138,9 +155,13 @@ async function handleToken(token: DetectedToken) {
 
   stats.passed++;
 
-  // Momentum mode does not enter here — the token has to earn it first.
+  // Neither of these enters at launch — the token has to earn it first.
   if (config.entryMode === 'momentum') {
     momentum.register(token);
+    return;
+  }
+  if (config.entryMode === 'copy') {
+    rememberToken(token);
     return;
   }
 
@@ -260,6 +281,30 @@ const detector = new Detector(
   (trade) => {
     positions.onTrade(trade);
     if (config.entryMode === 'momentum') momentum.onTrade(trade);
+    if (config.entryMode === 'copy') {
+      wallets.record(trade);
+      // Follow a buy only from a wallet with a record, and only into a launch we saw.
+      if (!trade.isBuy) return;
+      const mint = trade.mint.toBase58();
+      const token = recentTokens.get(mint);
+      if (!token || positions.has(mint)) return;
+      if (
+        !wallets.isProven(
+          trade.user.toBase58(),
+          config.copyMinClosed,
+          config.copyMinRealisedSol,
+          config.copyMinWinRate,
+        )
+      ) {
+        return;
+      }
+      const stat = wallets.stat(trade.user.toBase58());
+      log(
+        `following ${trade.user.toBase58().slice(0, 8)} into ${token.symbol} ` +
+          `(${stat?.realisedSol.toFixed(2)} SOL over ${stat?.closed} trades)`,
+      );
+      void enterPosition(token);
+    }
   },
   (message) => log(message),
 );
@@ -286,6 +331,10 @@ const getState = (): DashboardState => ({
   positions: positions.list().map((p) => ({ ...p, tokenAmount: p.tokenAmount.toString() })),
   performance: positions.performance(),
   learning: memory.stats(),
+  wallets: {
+    ...wallets.summary(config.copyMinClosed, config.copyMinRealisedSol, config.copyMinWinRate),
+    top: wallets.leaderboard(config.copyMinClosed, 6),
+  },
   feed,
   logs,
   stats: { ...stats, missed: detector.counters.undecodable },
@@ -343,9 +392,12 @@ async function main() {
   console.log('  wallet: ', wallet.publicKey.toBase58());
   console.log('  rpc:    ', config.rpcUrl);
   console.log('  mode:   ', config.dryRun ? 'DRY RUN (no real transactions)' : 'LIVE TRADING');
-  console.log('  entry:  ', config.entryMode === 'momentum'
-    ? `momentum (wait for ${config.momentumMinLiquiditySol} SOL liquidity and ${config.momentumMinBuys} buys)`
-    : 'snipe (buy at launch)');
+  const entryDescription = {
+    momentum: `momentum (wait for ${config.momentumMinLiquiditySol} SOL liquidity and ${config.momentumMinBuys} buys)`,
+    copy: `copy (follow wallets with ${config.copyMinRealisedSol}+ SOL over ${config.copyMinClosed}+ trades)`,
+    snipe: 'snipe (buy at launch)',
+  }[config.entryMode];
+  console.log('  entry:  ', entryDescription);
   if (!config.dryRun) {
     console.log('');
     console.log('  !! LIVE MODE — this wallet will spend real SOL.');
@@ -360,6 +412,7 @@ async function main() {
   positions.startExitPolling(config.exitPollMs);
   setInterval(() => void refreshBalance(), 30_000);
   setInterval(() => void executor.refreshBlockhash(), 10_000);
+  if (config.entryMode === 'copy') setInterval(() => wallets.save(), 60_000);
 }
 
 const shutdown = async () => {
