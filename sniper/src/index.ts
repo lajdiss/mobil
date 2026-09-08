@@ -6,6 +6,7 @@ import { CreatorHistory, evaluate } from './filters.js';
 import { KeywordMemory } from './learning.js';
 import { MomentumTracker } from './momentum.js';
 import { PositionManager, type Position } from './positions.js';
+import { Metrics } from './metrics.js';
 import { WalletTracker } from './wallets.js';
 import { startServer, type DashboardState } from './server.js';
 
@@ -16,7 +17,8 @@ const connection = new Connection(config.rpcUrl, {
   wsEndpoint: config.wsUrl,
 });
 
-const executor = new Executor(connection, wallet, config);
+const metrics = new Metrics();
+const executor = new Executor(connection, wallet, config, metrics);
 const history = new CreatorHistory();
 const memory = new KeywordMemory(config.learningPath);
 const wallets = new WalletTracker(config.walletPath);
@@ -54,6 +56,15 @@ let armed = false;
 let balanceSol = 0;
 let spentTodaySol = 0;
 let spendDay = new Date().toDateString();
+let consecutiveLosses = 0;
+let cooldownUntil = 0;
+let feesTodaySol = 0;
+
+/** Priority fee plus signature, per transaction, at the configured settings. */
+function estimatedFeeSol(): number {
+  const priority = (config.priorityFeeMicroLamports * config.computeUnitLimit) / 1e6 / 1e9;
+  return priority + 0.000005;
+}
 
 function log(message: string) {
   const line = `${new Date().toLocaleTimeString()}  ${message}`;
@@ -72,7 +83,8 @@ function rolloverSpendCap() {
   if (today !== spendDay) {
     spendDay = today;
     spentTodaySol = 0;
-    log('daily spend cap reset');
+    feesTodaySol = 0;
+    log('daily caps reset');
   }
 }
 
@@ -80,12 +92,24 @@ const positions = new PositionManager(
   executor,
   config,
   (position) => {
-    if (!config.learningEnabled) return;
     if (position.status !== 'closed' || position.exitSol === undefined) return;
     if (recorded.has(position.mint)) return;
     recorded.add(position.mint);
+
     const pnlPct = ((position.exitSol - position.entrySol) / position.entrySol) * 100;
-    memory.record(position.name, position.symbol, pnlPct);
+    if (config.learningEnabled) memory.record(position.name, position.symbol, pnlPct);
+
+    // A streak of losses is usually the market turning, not a setting to tweak.
+    if (pnlPct > 0) {
+      consecutiveLosses = 0;
+    } else {
+      consecutiveLosses++;
+      if (config.maxConsecutiveLosses > 0 && consecutiveLosses >= config.maxConsecutiveLosses) {
+        cooldownUntil = Date.now() + config.cooldownMinutes * 60_000;
+        log(`${consecutiveLosses} losses in a row — pausing entries for ${config.cooldownMinutes} min`);
+        consecutiveLosses = 0;
+      }
+    }
   },
   log,
 );
@@ -99,6 +123,14 @@ function canBuy(mint: string): string | null {
   if (positions.has(mint)) return 'already traded this token';
   if (positions.openCount() >= config.maxOpenPositions) return 'max open positions reached';
   if (spentTodaySol + config.buyAmountSol > config.dailySpendCapSol) return 'daily spend cap reached';
+  if (Date.now() < cooldownUntil) {
+    const left = Math.ceil((cooldownUntil - Date.now()) / 60_000);
+    return `cooling down after ${consecutiveLosses} losses (${left} min left)`;
+  }
+  // Two transactions per position: the entry and the exit.
+  if (config.maxDailyFeeSol > 0 && feesTodaySol + estimatedFeeSol() * 2 > config.maxDailyFeeSol) {
+    return 'daily fee budget reached';
+  }
   // Dry run exists to evaluate the strategy before funding anything, so the wallet
   // balance must not gate it.
   if (!config.dryRun && balanceSol - config.buyAmountSol < config.minSolReserve) {
@@ -122,10 +154,14 @@ const momentum = new MomentumTracker(
 
 async function handleToken(token: DetectedToken) {
   stats.detected++;
+  const mintKey = token.mint.toBase58();
+  metrics.start(mintKey);
   history.record(token.creator.toBase58());
 
   const verdict = evaluate(token, config, history);
+  metrics.mark(mintKey, 'filter');
   if (!verdict.passed) {
+    metrics.finish(mintKey, 'rejected', verdict.reason);
     pushFeed({
       mint: token.mint.toBase58(),
       name: token.name,
@@ -149,6 +185,7 @@ async function handleToken(token: DetectedToken) {
         verdict: 'skipped',
         reason: `learned score ${score.toFixed(1)}% below ${config.learningMinScore}%`,
       });
+      metrics.finish(mintKey, 'rejected', 'learned score too low');
       return;
     }
   }
@@ -169,8 +206,10 @@ async function handleToken(token: DetectedToken) {
 }
 
 async function enterPosition(token: DetectedToken) {
-  const blocker = canBuy(token.mint.toBase58());
+  const mintKey = token.mint.toBase58();
+  const blocker = canBuy(mintKey);
   if (blocker) {
+    metrics.finish(mintKey, 'rejected', blocker);
     pushFeed({
       mint: token.mint.toBase58(),
       name: token.name,
@@ -209,12 +248,14 @@ async function enterPosition(token: DetectedToken) {
         return;
       }
       entryQuote = now;
+      metrics.mark(mintKey, 'quote');
     } else if (config.dryRun && config.dryRunFillDelayMs > 0) {
       await new Promise((r) => setTimeout(r, config.dryRunFillDelayMs));
       const settled = await executor.getBondingCurve(token.mint).catch(() => null);
       if (settled) entryQuote = settled;
     }
 
+    metrics.mark(mintKey, 'build');
     const { result, tokenAmount, solSpent } = await executor.buy(
       token.mint,
       token.creator,
@@ -223,7 +264,9 @@ async function enterPosition(token: DetectedToken) {
       entryQuote,
     );
 
+    metrics.mark(mintKey, 'submit');
     spentTodaySol += solSpent;
+    feesTodaySol += estimatedFeeSol();
     stats.bought++;
 
     const position: Position = {
@@ -254,6 +297,7 @@ async function enterPosition(token: DetectedToken) {
       at: Date.now(),
       verdict: 'sniped',
     });
+    metrics.finish(mintKey, 'bought');
     log(
       config.dryRun
         ? `DRY RUN: would have bought ${token.symbol}`
@@ -262,6 +306,7 @@ async function enterPosition(token: DetectedToken) {
   } catch (err) {
     stats.errors++;
     const reason = (err as Error).message;
+    metrics.finish(mintKey, 'failed', reason.slice(0, 60));
     log(`buy failed for ${token.symbol}: ${reason}`);
     pushFeed({
       mint: token.mint.toBase58(),
@@ -331,6 +376,13 @@ const getState = (): DashboardState => ({
   positions: positions.list().map((p) => ({ ...p, tokenAmount: p.tokenAmount.toString() })),
   performance: positions.performance(),
   learning: memory.stats(),
+  metrics: metrics.snapshot(),
+  risk: {
+    consecutiveLosses,
+    cooldownMsLeft: Math.max(0, cooldownUntil - Date.now()),
+    feesTodaySol,
+    maxDailyFeeSol: config.maxDailyFeeSol,
+  },
   wallets: {
     ...wallets.summary(config.copyMinClosed, config.copyMinRealisedSol, config.copyMinWinRate),
     top: wallets.leaderboard(config.copyMinClosed, 6),

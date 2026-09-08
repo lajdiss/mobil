@@ -18,6 +18,8 @@ export interface DashboardState {
   performance: unknown;
   learning: unknown;
   wallets: unknown;
+  metrics: unknown;
+  risk: unknown;
   feed: unknown[];
   logs: string[];
   stats: { detected: number; passed: number; bought: number; errors: number; missed: number };

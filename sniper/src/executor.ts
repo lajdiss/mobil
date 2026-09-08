@@ -7,6 +7,7 @@ import {
   VersionedTransaction,
 } from '@solana/web3.js';
 import type { Config } from './config.js';
+import type { Metrics } from './metrics.js';
 import {
   associatedTokenAddress,
   buildBuyInstruction,
@@ -51,7 +52,13 @@ export class Executor {
     private readonly connection: Connection,
     private readonly wallet: Keypair,
     private readonly config: Config,
+    private readonly metrics?: Metrics,
   ) {}
+
+  /** Every network call goes through here so RPC latency is measured, not guessed. */
+  private rpc<T>(fn: () => Promise<T>): Promise<T> {
+    return this.metrics ? this.metrics.timeRpc(fn) : fn();
+  }
 
   /** Cached because the fee recipient lists change rarely but are needed on every trade. */
   private async getGlobalState(): Promise<GlobalState> {
@@ -65,7 +72,7 @@ export class Executor {
   }
 
   async getBondingCurve(mint: PublicKey): Promise<BondingCurve | null> {
-    const info = await this.connection.getAccountInfo(bondingCurvePda(mint));
+    const info = await this.rpc(() => this.connection.getAccountInfo(bondingCurvePda(mint)));
     return info ? decodeBondingCurve(info.data) : null;
   }
 
@@ -76,9 +83,8 @@ export class Executor {
 
     for (let i = 0; i < mints.length; i += 100) {
       const batch = mints.slice(i, i + 100);
-      const infos = await this.connection.getMultipleAccountsInfo(
-        batch.map(bondingCurvePda),
-        'processed',
+      const infos = await this.rpc(() =>
+        this.connection.getMultipleAccountsInfo(batch.map(bondingCurvePda), 'processed'),
       );
       infos.forEach((info, index) => {
         if (!info) return;
@@ -185,23 +191,29 @@ export class Executor {
 
     const tx = new VersionedTransaction(message);
 
-    // Simulating first turns a silent on-chain failure (which still costs the fee)
-    // into a local error we can log and skip.
-    const sim = await this.connection.simulateTransaction(tx, { commitment: 'processed' });
-    if (sim.value.err) {
-      const anchorError = (sim.value.logs || []).find((l) => l.includes('AnchorError'));
-      throw new Error(
-        `${label} simulation failed: ${JSON.stringify(sim.value.err)}${
-          anchorError ? ` — ${anchorError}` : ''
-        }`,
+    // Simulating first turns a silent on-chain failure (which still costs the fee) into
+    // a local error we can log and skip. It also costs a full RPC round trip on the
+    // entry path, measured here at 44ms median and 195ms at p95 — which on a launch is
+    // the difference between landing and not. Kept on by default; the trade is the
+    // caller's to make, not one to take silently for speed.
+    if (this.config.simulateBeforeSend) {
+      const sim = await this.rpc(() =>
+        this.connection.simulateTransaction(tx, { commitment: 'processed' }),
       );
+      if (sim.value.err) {
+        const anchorError = (sim.value.logs || []).find((l) => l.includes('AnchorError'));
+        throw new Error(
+          `${label} simulation failed: ${JSON.stringify(sim.value.err)}${
+            anchorError ? ` — ${anchorError}` : ''
+          }`,
+        );
+      }
     }
 
     tx.sign([this.wallet]);
-    const signature = await this.connection.sendTransaction(tx, {
-      skipPreflight: true,
-      maxRetries: 2,
-    });
+    const signature = await this.rpc(() =>
+      this.connection.sendTransaction(tx, { skipPreflight: true, maxRetries: 2 }),
+    );
     const confirmation = await this.connection.confirmTransaction(
       { signature, blockhash, lastValidBlockHeight },
       'confirmed',
